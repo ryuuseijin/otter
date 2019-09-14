@@ -162,6 +162,7 @@
                          (if (= :undo action)
                            (undo undo-state)
                            (redo undo-state))]
+                     (println ">>" (:delta undo-info))
                      (if undo-info
                        [(materialize tree (ot/delta (:delta undo-info)))
                         (record new-undo-state undo-info)
@@ -176,7 +177,6 @@
                                                    :lww-tie-breaker 1)
                                     (:root-op delta)
                                     xform-delta)]
-                     #_(println "!!" (:root-op delta) xform-delta ">>" delta' xform-delta')
                      [(materialize tree (ot/delta delta'))
                       (record undo-state
                               (undo-info delta' tree (= local-remote :local)))

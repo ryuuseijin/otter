@@ -1,6 +1,6 @@
 (ns otter.undo
   (:require [otter.core :as ot]
-            [otter.invert :refer [invert prepare]]
+            [otter.invert :refer [invert]]
             [otter.xform :refer [xform-ops xform-context]]
             [otter.compose :refer [compose-ops]]
             [otter.invert :refer [invert]]
@@ -16,7 +16,64 @@
   (xform-context :tie-breaker 1
                  :lww-tie-breaker 1))
 
+;; Imagine two undo-infos a and b occur in sequence one after the other
+;; and < and > constitute the delta direction, for example:
+;;
+;; a< is (:delta undo-info-a) a> is (:redo-delta undo-info-a)
+;; b< is (:delta undo-info-b) b> is (:redo-delta undo-info-b)
+;;
+;; Then we can arrive at the following tree states and the deltas between them:
+;;
+;; (tree-1) a< (tree-2) b> (tree-3)
+;; (tree-1) a> (tree-2) b< (tree-3)
+;;
+;; then we can xform a< b> because they both point away from the same
+;; tree (tree-2).
+;;
+;; But we can NOT xform a> b< because they point away from different
+;; trees.
+;;
+;; However after the first xform we have
+;;
+;; (tree-1) a<  (tree-2) b>  (tree-3)
+;; (tree-1) b>'  --XX--  a<' (tree-3)
+;; (tree-1) a>  (tree-2) b<  (tree-3)
+;;
+;; which means we can xform a<' b< and a> b>' for the result:
+;;
+;; (tree-1) a<  (tree-2) b>  (tree-3)
+;; (tree-1) b>'  --XX--  a<' (tree-3)
+;; (tree-1) a>  (tree-2) b<  (tree-3)
+;; (tree-1) b<'  --XX--  a>' (tree-3)
+
 (defn shift-undo-info [undo-info-a undo-info-b]
+  (let [[a<' b>']
+        (xform-ops left-wins-xform-ctx
+                   (:delta undo-info-a)
+                   (:redo-delta undo-info-b))
+
+        [_ b<']
+        (xform-ops left-wins-xform-ctx
+                   a<'
+                   (:delta undo-info-b))
+
+        ;;_ (assert (= (:delta undo-info-b) delta-b-<>))
+
+        [a>' _]
+        (xform-ops left-wins-xform-ctx
+                   (:redo-delta undo-info-a)
+                   b>')
+
+        ;;_ (assert (= (:redo-delta undo-info-a) redo-delta-a-><))
+        ]
+    [(assoc undo-info-a
+            :delta a<'
+            :redo-delta a>')
+     (assoc undo-info-b
+            :delta b<'
+            :redo-delta b>')]))
+
+#_(defn shift-undo-info [undo-info-a undo-info-b]
   (let [[delta-a->] (xform-ops left-wins-xform-ctx
                                (:delta undo-info-a)
                                (invert (:delta undo-info-b)))
@@ -34,8 +91,13 @@
     [(assoc undo-info-a :delta delta-a->)
      (assoc undo-info-b :delta delta-b-<)]))
 
-(defn compose-undo-info [undo-info-a undo-info-b]
+#_(defn compose-undo-info [undo-info-a undo-info-b]
   (update undo-info-a :delta #(compose-ops (:delta undo-info-b) %)))
+
+(defn compose-undo-info [undo-info-a undo-info-b]
+  (-> undo-info-a
+      (update :delta #(compose-ops (:delta undo-info-b) %))
+      (update :redo-delta #(compose-ops % (:redo-delta undo-info-b)))))
 
 (defn bring-local-to-front [history-v]
   (if (or (< (count history-v) 2)
@@ -54,6 +116,17 @@
           (conj new-back1)))))
 
 (defn undo-info [delta tree local?]
+  {:delta delta
+   :redo-delta (invert delta tree)
+   :local? local?
+   :redoable? false})
+
+(defn invert-undo-info [undo-info]
+  (assoc undo-info
+         :delta (:redo-delta undo-info)
+         :redo-delta (:delta undo-info)))
+
+#_(defn undo-info [delta tree local?]
   {:delta (prepare delta tree)
    :local? local?
    :redoable? false})
@@ -61,7 +134,7 @@
 ;;XX option to throw away redo history
 (defn record [state undo-info]
   (let [{:keys [combine-local?]} state
-        undo-info (update undo-info :delta invert)]
+        undo-info (invert-undo-info undo-info)]
     (-> state
         (cond-> (:local? undo-info)
           (-> (update :backward bring-local-to-front)
