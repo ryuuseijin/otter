@@ -9,6 +9,7 @@
             [otter.generators :as otter-gen]
             [otter.materialize :refer [materialize]]))
 
+;;XX same result with (deltas-gen)
 (def compose-same-materialize-result-prop
   (prop/for-all [[tree deltas]
                  (gen/let [tree (otter-gen/tree-gen otter-gen/node-gen)

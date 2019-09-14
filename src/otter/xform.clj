@@ -84,10 +84,14 @@
     [(assoc delta-a :root-op op-a)
      (assoc delta-b :root-op op-b)]))
 
+(defn xform-context [& {:keys [tie-breaker lww-tie-breaker] :as context}]
+  context)
+
 (defn xform-revisions [revision-a revision-b]
   (let [[delta-a delta-b]
-        (xform {:tie-breaker (make-tie-breaker revision-a revision-b)
-                :lww-tie-breaker (make-lww-tie-breaker revision-a revision-b)}
+        (xform (xform-context
+                :tie-breaker (make-tie-breaker revision-a revision-b)
+                :lww-tie-breaker (make-lww-tie-breaker revision-a revision-b))
                (:delta revision-a)
                (:delta revision-b))]
     [(assoc revision-a :delta delta-a)

@@ -19,3 +19,21 @@
 (defn map-vals [val-fn m]
   (map-kv identity val-fn m))
 
+(defn peek-n [n s]
+  (loop [n n
+         s s
+         r '()]
+    (if (and (pos? n)
+             (seq s))
+      (recur (dec n)
+             (pop s)
+             (cons (peek s) r))
+      r)))
+
+(defn pop-n [n s]
+  (-> (iterate pop s)
+      (nth n)))
+
+(defn peek-replace [s f & args]
+  (-> (pop s)
+      (conj (apply f (peek s) args))))

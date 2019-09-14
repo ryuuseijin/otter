@@ -1,96 +1,102 @@
 (ns otter.undo
-  (:require [otter.invert :refer [invert]]
-            [otter.xform :refer [xform-revisions]]
-            [otter.compose :refer [compose]]))
+  (:require [otter.core :as ot]
+            [otter.invert :refer [invert prepare]]
+            [otter.xform :refer [xform-ops xform-context]]
+            [otter.compose :refer [compose-ops]]
+            [otter.invert :refer [invert]]
+            [otter.delta :refer [optimize]]
+            [otter.utils :refer :all]))
 
-(defn empty-undo-state [combine-local?]
+(defn empty-state [combine-local?]
   {:backward []
    :forward  []
-   :combine-local combine-local?})
+   :combine-local? combine-local?})
+
+(def left-wins-xform-ctx
+  (xform-context :tie-breaker 1
+                 :lww-tie-breaker 1))
+
+(defn shift-undo-info [undo-info-a undo-info-b]
+  (let [[delta-a->] (xform-ops left-wins-xform-ctx
+                               (:delta undo-info-a)
+                               (invert (:delta undo-info-b)))
+        [delta-a-><
+         delta-b-<] (xform-ops left-wins-xform-ctx
+                               delta-a->
+                               (:delta undo-info-b))]
+    ;;XX remove the assert
+    #_(try (assert (= (optimize (ot/delta delta-a-><))
+                    (optimize (ot/delta (:delta undo-info-a))))
+                 "double shifted delta should be the same as before")
+         (catch Throwable e
+           (println ">>" delta-a->< (:delta undo-info-a))
+           (throw e)))
+    [(assoc undo-info-a :delta delta-a->)
+     (assoc undo-info-b :delta delta-b-<)]))
 
 (defn compose-undo-info [undo-info-a undo-info-b]
-  (-> undo-info-a
-      (update :delta compose (:delta undo-info-b))
-      (update :inv-delta compose (:inv-delta undo-info-b))))
+  (update undo-info-a :delta #(compose-ops (:delta undo-info-b) %)))
 
-;;XX avoid doing so many xforms by just filling out all the info
-;;   necessary for the inverse inside the delta
-(defn xform-undo-info [undo-info-a undo-info-b]
-  (let [[inv-delta-a-> delta-b-<]
-        (xform (:inv-delta undo-info-a)
-               (:delta undo-info-b))
+(defn bring-local-to-front [history-v]
+  (if (or (< (count history-v) 2)
+          (:local? (peek history-v)))
+    history-v
+    (let [[back1 back0] (peek-n 2 history-v)
+          history-pop2 (pop-n 2 history-v)
+          [new-back1 new-back0] (shift-undo-info back1 back0)]
+      (-> history-pop2
+          (cond-> (seq history-pop2)
+            (cond-> (:local? (peek history-pop2))
+                    (conj new-back0)
 
-        [delta-a-> delta-b-<>]
-        (xform (:delta undo-info-a)
-               delta-b-<)
-
-        _ (assert (= delta-b delta-b-<>))
-
-        [inv-delta-a->< inv-delta-b-<]
-        (xform inv-delta-a->
-               (:inv-delta undo-info-b))
-
-        _ (assert (= inv-delta-a inv-delta-a><))]
-
-    [(assoc undo-info-a
-            :delta delta-a->
-            :inv-delta inv-delta-a->)
-     (assoc undo-info-b
-            :delta delta-b-<
-            :inv-delta inv-delta-b-<)]))
-
-(defn invert-undo-info [undo-info]
-  (assoc undo-info
-         :delta (:inv-delta undo-info)
-         :inv-delta (:delta undo-info)))
-
-(defn bring-local-forward [state]
-  (let [{:keys [backward]} state]
-    (if (or (< (count backward) 2)
-            (:local? (peek backward)))
-      state
-      (let [[back1 back0] (peek-n 2 backward)
-            backward-minus2 (pop-n 2 backward)
-            [new-back1 new-back0] (xform-undo-info back1 back0)]
-        (-> backward-minus2
-            (cond->
-                (seq    backward-minus2) (peek-replace compose-undo-info back0)
-                (empty? backward-minus2) (conj back0))
-            (conj back1))))))
+                    (not (:local? (peek history-pop2)))
+                    (peek-replace compose-undo-info new-back0)))
+          (conj new-back1)))))
 
 (defn undo-info [delta tree local?]
-  {:delta delta
-   :inv-delta (invert delta tree)
-   :local local?
-   :redoable false})
+  {:delta (prepare delta tree)
+   :local? local?
+   :redoable? false})
 
+;;XX option to throw away redo history
 (defn record [state undo-info]
-  (let [new-state (cond-> state (:local? undo-info) (bring-local-forward))
-        {:keys [combine-local? backward]} new-state]
-    (-> new-state
-        (update :backward
-                #(if (and (= (:local? undo-info)
-                             (:local? (peek backward)))
-                          (or (not (:local? undo-info))
-                              (combine-local? (peek backward) undo-info)))
-                   (peek-replace % compose-undo-info undo-info)
-                   (conj % undo-info)))
-        (update :forward
-                #(if (or (seq %)
-                         (:redoable undo-info))
-                   (if (and (:local? undo-info)
-                            (combine-local? undo-info (peek %)))
-                     (peek-replace % compose-undo-info undo-info)
-                     (conj % undo-info))
-                   %)))))
+  (let [{:keys [combine-local?]} state
+        undo-info (update undo-info :delta invert)]
+    (-> state
+        (cond-> (:local? undo-info)
+          (-> (update :backward bring-local-to-front)
+              (update :forward bring-local-to-front)))
+        (cond-> (and (not (:redoable? undo-info))
+                     (or (:local? undo-info)
+                         (seq (:backward state))))
+          (update :backward
+                  (fn [backward]
+                    (if (and (= (:local? undo-info)
+                                (:local? (peek backward)))
+                             (or (not (:local? undo-info))
+                                 (combine-local? (peek backward) undo-info)))
+                      (peek-replace backward compose-undo-info undo-info)
+                      (conj backward undo-info)))))
+        (cond-> (or (:redoable? undo-info)
+                    (and (seq (:forward state))
+                         (not (:local? undo-info))))
+          (update :forward
+                  (fn [forward]
+                    (if (and (:local? undo-info)
+                             (combine-local? undo-info (peek forward)))
+                      (peek-replace forward compose-undo-info undo-info)
+                      (conj forward undo-info))))))))
 
-(defn undo [state]
-  (let [{:keys [backward] :as new-state} (bring-local-forward state)
-        undo-info (peek backward)]
+(defn unredo [state direction]
+  (let [new-state (update state direction bring-local-to-front)
+        undo-info (peek (direction new-state))]
     (if (:local? undo-info)
-      [(update new-state :backward pop)
-       (assoc undo-info :redoable true)]
+      [(update new-state direction pop)
+       (assoc undo-info :redoable? (= direction :backward))]
       [new-state nil])))
 
+(defn undo [state]
+  (unredo state :backward))
+
 (defn redo [state]
-  )
+  (unredo state :forward))

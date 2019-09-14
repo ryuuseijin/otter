@@ -122,6 +122,17 @@
  ;;   lot of ops on the root node. Probably because delete operations
  ;;   may delete entire subtrees of other operations.
 (defn delta-gen
-  ([num-ops tree]
+  ([num-ops tree] ;;XX reverse num-ops and tree
    (gen/let [deltas (single-op-deltas-gen num-ops tree)]
      (reduce compose deltas))))
+
+(defn deltas-gen
+  ([tree min-deltas max-deltas]
+   (gen/let [num-deltas (gen/choose min-deltas max-deltas)]
+     (deltas-gen tree num-deltas)))
+  ([tree num-deltas]
+   (if (pos? num-deltas)
+     (gen/let [delta (delta-gen 10 tree) ;;XX parameterize
+               deltas (deltas-gen (materialize tree delta) (dec num-deltas))]
+       (cons delta deltas))
+     (gen/return []))))
