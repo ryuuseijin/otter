@@ -197,9 +197,11 @@
   (testing "composing retain-subtree with"
     (testing "insert-values"
       (testing "on map values or root nodes"
-        (is (= (op/insert-values [:val])
-               (compose-ops (op/retain-subtree {})
-                            (op/insert-values [:val])))))
+        (is (thrown-with-msg?
+             Exception
+             #"insert-values on a pre-existing map entry or root node"
+             (compose-ops (op/retain-subtree {})
+                          (op/insert-values [:val])))))
       (testing "on sequences"
         (is (= [(op/insert-values [:val])
                 (op/retain-subtree {})]
@@ -267,9 +269,14 @@
   (testing "composing delete-range with"
     (testing "insert-values"
       (testing "on map values or root nodes"
-        (is (= (op/replace-value :val)
-               (compose-ops (op/delete-range 1)
-                            (op/insert-values [:val])))))
+        (testing "with deleted-values"
+          (is (= (op/replace-value :val2 :val1)
+                 (compose-ops (op/delete-range 1 [:val1])
+                              (op/insert-values [:val2])))))
+        (testing "without deleted-values"
+          (is (= (op/replace-value :val)
+                 (compose-ops (op/delete-range 1)
+                              (op/insert-values [:val]))))))
       (testing "on sequences"
         (is (= [(op/delete-range 1)
                 (op/insert-values [:val])]
@@ -289,7 +296,7 @@
       (testing "on map values or root nodes"
         (is (thrown-with-msg?
              Exception
-             #":retain-subtree after a :delete-range is invalid"
+             #"retain-subtree on a non-existing map entry or root node"
              (compose-ops (op/delete-range 1)
                           (op/retain-subtree {})))))
       (testing "on sequences"
@@ -300,9 +307,11 @@
 
     (testing "delete-range"
       (testing "on map values or root nodes"
-        (is (= (op/delete-range 1)
-               (compose-ops (op/delete-range 1)
-                            (op/delete-range 1)))))
+        (is (thrown-with-msg?
+             Exception
+             #"delete-range on a non-existing map entry or root node"
+             (compose-ops (op/delete-range 1)
+                          (op/delete-range 1)))))
       (testing "on sequences"
         (is (= [(op/delete-range 1)
                 (op/delete-range 1)]
@@ -315,9 +324,11 @@
                                [(op/delete-range 1)]))))))
     (testing "replace-value"
       (testing "on map values or root nodes"
-        (is (= (op/replace-value :val)
-               (compose-ops (op/delete-range 1)
-                            (op/replace-value :val)))))
+        (is (thrown-with-msg?
+             Exception
+             #"replace-value on a non-existing map entry or root node"
+             (compose-ops (op/delete-range 1)
+                          (op/replace-value :val)))))
       (testing "on sequences"
         (is (= [(op/delete-range 1) (op/replace-value :val)]
                (compose-seqs [(op/delete-range 1)]
@@ -336,9 +347,11 @@
   (testing "composing replace-value with"
     (testing "insert-values"
       (testing "on map values or root nodes"
-        (is (= (op/insert-values [:val2])
-               (compose-ops (op/replace-value :val1)
-                            (op/insert-values [:val2])))))
+        (is (thrown-with-msg?
+             Exception
+             #"insert-values on a pre-existing map entry or root node"
+             (compose-ops (op/replace-value :val1)
+                          (op/insert-values [:val2])))))
       (testing "on sequences"
         (is (= [(op/insert-values [:val2])
                 (op/replace-value :val1)]

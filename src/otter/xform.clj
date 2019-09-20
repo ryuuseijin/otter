@@ -128,19 +128,22 @@
 
       (< (:retain-length a)
          (:retain-length b))
-      [(conj pa a)
-       (conj pb (assoc b :retain-length (:retain-length a)))
-       (next na)
-       (->> (next nb)
-            (cons (update b :retain-length - (:retain-length a)) ))]
+      (let [[split-1 split-2] (op/split-op b (:retain-length a))]
+        [(conj pa a)
+         (conj pb split-1)
+         (next na)
+         (->> (next nb)
+              (cons split-2))])
 
       (> (:retain-length a)
          (:retain-length b))
-      [(conj pa (assoc a :retain-length (:retain-length b)))
-       (conj pb b)
-       (->> (next na)
-            (cons (update a :retain-length - (:retain-length b))))
-       (next nb)]
+
+      (let [[split-1 split-2] (op/split-op a (:retain-length b))]
+        [(conj pa split-1)
+         (conj pb b)
+         (->> (next na)
+              (cons split-2))
+         (next nb)])
 
       :else (unreachable))))
 
@@ -161,14 +164,14 @@
        pb
        (next na)
        (->> (next nb)
-            (cons (update b :delete-length - (:delete-length a))))]
+            (cons (second (op/split-op b (:delete-length a)))))]
 
       (> (:delete-length a)
          (:delete-length b))
       [pa
        pb
        (->> (next na)
-            (cons (update a :delete-length - (:delete-length b))))
+            (cons (second (op/split-op a (:delete-length b)))))
        (next nb)]
 
       :else (unreachable))))
@@ -187,18 +190,19 @@
 
       (< (:retain-length a)
          (:delete-length b))
-      [pa
-       (conj pb (assoc b :delete-length (:retain-length a)))
-       (next na)
-       (->> (next nb)
-            (cons (update b :delete-length - (:retain-length a))))]
+      (let [[split-1 split-2] (op/split-op b (:retain-length a))]
+        [pa
+         (conj pb split-1)
+         (next na)
+         (->> (next nb)
+              (cons split-2))])
 
       (> (:retain-length a)
          (:delete-length b))
       [pa
        (conj pb b)
        (->> (next na)
-            (cons (update a :retain-length - (:delete-length b))))
+            (cons (second (op/split-op a (:delete-length b)))))
        (next nb)]
 
       :else (unreachable))))
@@ -217,9 +221,10 @@
          (next nb)]
       [pa
        pb
-       (->> (next na)
-            (cons (update a :retain-length dec))
-            (cons (assoc a :retain-length 1)))
+       (let [[split-1 split-2] (op/split-op a 1)]
+         (->> (next na)
+              (cons split-2)
+              (cons split-1)))
        nb])))
 
 (def xform_retain-one_retain-range
@@ -236,9 +241,10 @@
          (next nb)]
       [pa
        pb
-       (->> (next na)
-            (cons (update a :delete-length dec))
-            (cons (assoc a :delete-length 1)))
+       (let [[split-1 split-2] (op/split-op a 1)]
+         (->> (next na)
+              (cons split-2)
+              (cons split-1)))
        nb])))
 
 (def xform_retain-one_delete-range
@@ -461,30 +467,36 @@
 
 ;; insert-values
 
+;;XX this may introduce operations for which :have-replaced-value? is
+;;true even though the tree was supposed to be clear of this undo data
 (defmethod xform-in-map_any_any [:insert-values :insert-values] [context a b]
   (xform-in-map_insert_insert context
-                              (op/replace-value (first (:values a)))
-                              (op/replace-value (first (:values b)))))
+                              (op/replace-value (first (:values a))
+                                                (first (:values b)))
+                              (op/replace-value (first (:values b))
+                                                (first (:values a)))))
 
-;; invalid (insert over existing | retain non-existing)
+;; This is valid becase we allow retain-range as a no-op on non-existing
+;; map entries and nil root nodes.
 (defmethod xform-in-map_any_any [:insert-values :retain-range] [context a b]
   [a op/retain])
 
 ;; invalid (insert over existing | retain non-existing)
 (defmethod xform-in-map_any_any [:insert-values :retain-subtree] [context a b]
-  [a op/retain])
+  (panic "insert over existing or retain non-existing"))
 
 ;; invalid (insert over existing | delete non-existing)
 (defmethod xform-in-map_any_any [:insert-values :delete-range] [context a b]
-  [a op/retain])
+  (panic "insert over existing or delete non-existing"))
 
 ;; invalid (insert over existing | replace non-existing)
 (defmethod xform-in-map_any_any [:insert-values :replace-value] [context a b]
-  (xform-in-map_insert_insert context (op/replace-value (first (:values a))) b))
+  (panic "insert over existing or replace non-existing"))
 
 ;; retain-range
 
-;; invalid (insert over existing | retain non-existing)
+;; This is valid becase we allow retain-range as a no-op on non-existing
+;; map entries and nil root nodes.
 (defmethod xform-in-map_any_any [:retain-range :insert-values] [context a b]
   [op/retain b])
 
@@ -504,7 +516,7 @@
 
 ;; invalid (insert over existing | retain non-existing)
 (defmethod xform-in-map_any_any [:retain-subtree :insert-values] [context a b]
-  [op/retain b])
+  (panic "insert over existing or retain non-existing"))
 
 (defmethod xform-in-map_any_any [:retain-subtree :retain-range] [context a b]
   [a op/retain])
@@ -524,7 +536,7 @@
 
 ;; invalid (insert over existing | delete non-existing)
 (defmethod xform-in-map_any_any [:delete-range :insert-values] [context a b]
-  [op/retain b])
+  (panic "insert over existing or delete non-existing"))
 
 (defmethod xform-in-map_any_any [:delete-range :retain-range] [context a b]
   [a op/retain])
@@ -542,7 +554,7 @@
 
 ;; invalid (insert over existing | replace non-existing)
 (defmethod xform-in-map_any_any [:replace-value :insert-values] [context a b]
-  (xform-in-map_insert_insert context a (op/replace-value (first (:values b)))))
+  (panic "insert over existing or replace non-existing"))
 
 (defmethod xform-in-map_any_any [:replace-value :retain-range] [context a b]
   [a op/retain])

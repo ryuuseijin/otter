@@ -20,7 +20,7 @@
 (defn prepare-map [op-map node-map]
   (into {}
         (map (fn [[k op]]
-               [k (prepare-op op (get node-map k))]))
+               [k (prepare op (get node-map k))]))
         op-map))
 
 (defn prepare-subtree [subtree node]
@@ -48,11 +48,15 @@
    (next nodes)])
 
 (defmethod prepare-op-in-seq :delete-range [op nodes]
-  [(vary-meta op assoc ::deleted-values (take (:delete-length op) nodes))
+  [(assoc op
+          :deleted-values (take (:delete-length op) nodes)
+          :have-deleted-values? true)
    (drop (:delete-length op) nodes)])
 
 (defmethod prepare-op-in-seq :replace-value [op nodes]
-  [(vary-meta op assoc ::replaced-value (first nodes))
+  [(assoc op
+          :replaced-value (first nodes)
+          :have-replaced-value? true)
    (next nodes)])
 
 (defmethod prepare-op-in-seq :mark [op nodes]
@@ -80,8 +84,8 @@
     :else (panic)))
 
 (defmethod invert-op :insert-values [op]
-  (-> (op/delete-range (count (:values op)))
-      (vary-meta assoc ::deleted-values (:values op))))
+  (op/delete-range (count (:values op))
+                   (:values op)))
 
 (defmethod invert-op :retain-range [op]
   op)
@@ -93,15 +97,14 @@
   (panic "unable to invert unprepared delta; use (invert delta tree) or (invert (prepare delta tree))"))
 
 (defmethod invert-op :delete-range [op]
-  (if-let [[_ values] (-> op meta (find ::deleted-values))]
-    (op/insert-values values)
-    (panic-unprepared)))
+  (when-not (:have-deleted-values? op)
+    (panic-unprepared))
+  (op/insert-values (:deleted-values op)))
 
 (defmethod invert-op :replace-value [op]
-  (if-let [[_ value] (-> op meta (find ::replaced-value))]
-    (-> (op/replace-value value)
-        (vary-meta assoc ::replaced-value (:value op)))
-    (panic-unprepared)))
+  (when-not (:have-replaced-value? op)
+    (panic-unprepared))
+  (op/replace-value (:replaced-value op) (:value op)))
 
 (defmethod invert-op :mark [op]
   op)

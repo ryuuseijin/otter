@@ -13,29 +13,28 @@
 (defn keep-op [prevs op]
   (conj prevs op))
 
-(defn maybe-join [joinable-attr-kw zero-width? join-op prevs op]
+(defn maybe-join [prevs op]
   (cond
     (= (:type op) (:type (peek prevs)))
-    (-> (pop prevs)
-        (conj (update (peek prevs) joinable-attr-kw join-op (joinable-attr-kw op))))
+    (peek-replace prevs op/join-ops op)
 
-    (zero-width? (joinable-attr-kw op))
+    (zero? (op/op-length op))
     (skip-op prevs op)
     
     :else
     (keep-op prevs op)))
 
 (defmethod optimize-ops-in-seq :insert-values [prevs op]
-  (maybe-join :values empty? into prevs op))
+  (maybe-join prevs op))
 
 (defmethod optimize-ops-in-seq :retain-range [prevs op]
-  (maybe-join :retain-length zero? + prevs op))
+  (maybe-join prevs op))
 
 (defmethod optimize-ops-in-seq :retain-subtree [prevs op]
   (keep-op prevs (optimize-op op)))
 
 (defmethod optimize-ops-in-seq :delete-range [prevs op]
-  (maybe-join :delete-length zero? + prevs op))
+  (maybe-join prevs op))
 
 (defmethod optimize-ops-in-seq :replace-value [prevs op]
   (keep-op prevs op))
@@ -55,7 +54,7 @@
                                 (not= :retain-range (:type op))))))))
 
 
-(defn optimize-op [op]
+(defn optimize [op]
   (when-not (= 1 (op/op-length op))
     (panic "operations on map values or root nodes must have a length of 1"))
   (case (:type op)
@@ -74,6 +73,3 @@
           op/retain)))
     ;;else
     op))
-
-(defn optimize [delta]
-  (optimize-op (:root-op delta)))

@@ -32,9 +32,9 @@
                                        (redo))
           [state-redo2 redo-info2] (redo state-redo1)]
       (is (= (op/retain-subtree [(op/retain-range 2)
-                                 (op/delete-range 2)])
+                                 (op/delete-range 2 [3 4])])
              (:delta undo-info1)))
-      (is (= (op/retain-subtree [(op/delete-range 2)])
+      (is (= (op/retain-subtree [(op/delete-range 2 [1 2])])
              (:delta undo-info2)))
       (is (= (op/retain-subtree [(op/insert-values [1 2])])
              (:delta redo-info1)))
@@ -58,9 +58,9 @@
                                  [1 2 "a" "b"]
                                  true)))
           [state-undo1 undo-info1] (undo undo-state)]
-      (is (= (op/retain-subtree [(op/delete-range 2)
+      (is (= (op/retain-subtree [(op/delete-range 2 [1 2])
                                  (op/retain-range 2)
-                                 (op/delete-range 2)])
+                                 (op/delete-range 2 [3 4])])
              (:delta undo-info1))))))
 
 (deftest test-merging-remote-operations
@@ -76,8 +76,8 @@
                                  ["a" "b"]
                                  false)))]
       (is (= 2 (count (:backward undo-state))))
-      (is (= (op/retain-subtree [(op/delete-range 2)
-                                 (op/delete-range 2)])
+      (is (= (op/retain-subtree [(op/delete-range 2 ["a" "b"])
+                                 (op/delete-range 2 ["c" "d"])])
              (:delta (peek (:backward undo-state))))))))
 
 (deftest test-moving-back-remote-operations
@@ -109,11 +109,11 @@
       ;; merged local operation
       (is (= (op/retain-subtree [(op/retain-range 2)
                                  (op/retain-range 2)
-                                 (op/delete-range 2)])
+                                 (op/delete-range 2 [1 2])])
              (:delta (peek (:backward undo-state)))))
       ;; merged remote operation
-      (is (= (op/retain-subtree [(op/delete-range 2)
-                                 (op/delete-range 2)])
+      (is (= (op/retain-subtree [(op/delete-range 2 ["a" "b"])
+                                 (op/delete-range 2 ["c" "d"])])
              (:delta (peek (pop (:backward undo-state)))))))))
 
 (deftest test-dropping-remote-operations
@@ -162,12 +162,16 @@
                          (if (= :undo action)
                            (undo undo-state)
                            (redo undo-state))]
-                     (println ">>" (:delta undo-info))
                      (if undo-info
                        [(materialize tree (ot/delta (:delta undo-info)))
-                        (record new-undo-state undo-info)
-                        (compose-ops (:delta undo-info)
-                                     xform-delta)]
+                        (do #_(println "**" (:delta undo-info)
+                                     new-undo-state)
+                            (record new-undo-state undo-info))
+                        (do #_(println "cmp"
+                                     (:delta undo-info)
+                                     xform-delta)
+                            (compose-ops xform-delta
+                                         (:delta undo-info)))]
                        [tree new-undo-state xform-delta]))
 
                    :record
@@ -177,6 +181,7 @@
                                                    :lww-tie-breaker 1)
                                     (:root-op delta)
                                     xform-delta)]
+                     #_(println ">>" delta')
                      [(materialize tree (ot/delta delta'))
                       (record undo-state
                               (undo-info delta' tree (= local-remote :local)))
@@ -194,3 +199,34 @@
        ;; an error, but is there some other property we can check about
        ;; the actioned-tree or the undo-state?
        (is true))))
+
+
+;;XX allow keeping the redo stack
+#_(apply-unredo-actions
+ {}
+ '[(:record {:root-op {:type :delete-range, :delete-length 1}} :local)
+   (:record {:root-op {:type :insert-values, :values [{}]}} :local)
+   [:undo]
+   (:record {:root-op {:type :replace-value, :value {}}} :local)
+   [:redo]
+])
+
+(deftest undo-prop-gen-1
+  (testing "whether composition is done in the right order in apply-undo-actions"
+    (is (= {}
+           (first
+            (apply-unredo-actions
+             {}
+             [[:record (ot/delta (op/replace-value :val2)) :local]
+              [:record (ot/delta (op/delete-range 1)) :local]
+              [:undo]
+              [:undo]]))))))
+
+(deftest undo-prop-gen-2
+  (apply-unredo-actions
+   :val2
+   [[:record (ot/delta (op/delete-range 1)) :local]
+    [:record (ot/delta (op/insert-values [:val1])) :local]
+    [:record (ot/delta (op/delete-range 1)) :remote]
+    [:undo]
+    [:undo]]))

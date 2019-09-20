@@ -124,12 +124,12 @@
       (testing "on maps or root nodes"
         (testing "with positive tie breakers"
           (is (= [{:key (op/retain-range 1)}
-                  {:key (op/replace-value :val2)}]
+                  {:key (op/replace-value :val2 :val1)}]
                  (xform-maps ctx-pos
                              {:key (op/insert-values [:val1])}
                              {:key (op/insert-values [:val2])}))))
         (testing "with negative tie breakers"
-          (is (= [{:key (op/replace-value :val1)}
+          (is (= [{:key (op/replace-value :val1 :val2)}
                   {:key (op/retain-range 1)}]
                  (xform-maps ctx-neg
                              {:key (op/insert-values [:val1])}
@@ -159,11 +159,12 @@
                            [(op/insert-values [:val])]
                            [(op/retain-subtree [])]))))
       (testing "on maps"
-        (is (= [{:key (op/insert-values [:val1])}
-                {:key (op/retain-range 1)}]
-               (xform-maps ctx-pos
-                           {:key (op/insert-values [:val1])}
-                           {:key (op/retain-subtree {})})))))
+        (is (thrown-with-msg?
+             Exception
+             #"insert over existing or retain non-existing"
+             (xform-maps ctx-pos
+                         {:key (op/insert-values [:val1])}
+                         {:key (op/retain-subtree {})})))))
     (testing "delete-range"
       (testing "on sequences"
         (is (= [[(op/insert-values [:val])]
@@ -173,11 +174,12 @@
                            [(op/insert-values [:val])]
                            [(op/delete-range 1)]))))
       (testing "on maps or root nodes"
-        (is (= [{:key (op/insert-values [:val])}
-                {:key (op/retain-range 1)}]
-               (xform-maps ctx-pos
-                           {:key (op/insert-values [:val])}
-                           {:key (op/delete-range 1)})))))
+        (is (thrown-with-msg?
+             Exception
+             #"insert over existing or delete non-existing"
+             (xform-maps ctx-pos
+                         {:key (op/insert-values [:val])}
+                         {:key (op/delete-range 1)})))))
     (testing "replace-value"
       (testing "on sequences"
         (is (= [[(op/insert-values [:val1])
@@ -188,18 +190,12 @@
                            [(op/insert-values [:val1])]
                            [(op/replace-value :val2)]))))
       (testing "on maps"
-        (testing "with positive tie breakers"
-          (is (= [{:key (op/retain-range 1)}
-                  {:key (op/replace-value :val2)}]
-                 (xform-maps ctx-pos
-                             {:key (op/insert-values [:val1])}
-                             {:key (op/replace-value :val2)}))))
-        (testing "with negative tie breakers"
-          (is (= [{:key (op/replace-value :val1)}
-                  {:key (op/retain-range 1)}]
-                 (xform-maps ctx-neg
-                             {:key (op/insert-values [:val1])}
-                             {:key (op/replace-value :val2)}))))))
+        (is (thrown-with-msg?
+             Exception
+             #"insert over existing or replace non-existing"
+             (xform-maps ctx-pos
+                         {:key (op/insert-values [:val1])}
+                         {:key (op/replace-value :val2)})))))
     (testing "mark"
       (is (= [[(op/insert-values [:val])]
               [(op/mark "id")
@@ -309,11 +305,12 @@
                            [(op/retain-subtree [])]
                            [(op/insert-values [:val])]))))
       (testing "on maps"
-        (is (= [{:key (op/retain-range 1)}
-                {:key (op/insert-values [:val])}]
-               (xform-maps ctx-pos
-                           {:key (op/retain-subtree {})}
-                           {:key (op/insert-values [:val])})))))
+        (is (thrown-with-msg?
+             Exception
+             #"insert over existing or retain non-existing"
+             (xform-maps ctx-pos
+                         {:key (op/retain-subtree {})}
+                         {:key (op/insert-values [:val])})))))
     (testing "retain-range"
       (testing "on sequences"
         (is (= [[(op/retain-subtree [])]
@@ -338,7 +335,7 @@
                            [(op/retain-subtree [(op/insert-values [:val2])])]))))
       (testing "on maps"
         (is (= [{:key (op/retain-subtree {:key (op/retain-range 1)})}
-                {:key (op/retain-subtree {:key (op/replace-value :val2)})}]
+                {:key (op/retain-subtree {:key (op/replace-value :val2 :val1)})}]
                (xform-maps ctx-pos
                            {:key (op/retain-subtree {:key (op/insert-values [:val1])})}
                            {:key (op/retain-subtree {:key (op/insert-values [:val2])})})))))
@@ -393,11 +390,12 @@
                            [(op/delete-range 1)]
                            [(op/insert-values [:val])]))))
       (testing "on maps"
-        (is (= [{:key (op/retain-range 1)}
-                {:key (op/insert-values [:val])}]
-               (xform-maps ctx-pos
-                           {:key (op/delete-range 1)}
-                           {:key (op/insert-values [:val])})))))
+        (is (thrown-with-msg?
+             Exception
+             #"insert over existing or delete non-existing"
+             (xform-maps ctx-pos
+                         {:key (op/delete-range 1)}
+                         {:key (op/insert-values [:val])})))))
     (testing "retain-range"
       (testing "on sequences"
         (is (= [[(op/delete-range 1)]
@@ -475,18 +473,12 @@
                            [(op/replace-value :val1)]
                            [(op/insert-values [:val2])]))))
       (testing "on maps"
-        (testing "with positive tie breakers"
-          (is (= [{:key (op/retain-range 1)}
-                  {:key (op/replace-value :val2)}]
-                 (xform-maps ctx-pos
-                             {:key (op/replace-value :val1)}
-                             {:key (op/insert-values [:val2])}))))
-        (testing "with negative tie breakers"
-          (is (= [{:key (op/replace-value :val1)}
-                  {:key (op/retain-range 1)}]
-                 (xform-maps ctx-neg
-                             {:key (op/replace-value :val1)}
-                             {:key (op/insert-values [:val2])}))))))
+        (is (thrown-with-msg?
+             Exception
+             #"insert over existing or replace non-existing"
+             (xform-maps ctx-pos
+                         {:key (op/replace-value :val1)}
+                         {:key (op/insert-values [:val2])})))))
     (testing "retain-range"
       (testing "on sequences"
         (is (= [[(op/replace-value :val)]

@@ -2,6 +2,7 @@
   (:require [otter.core :as ot]
             [otter.operations :as op]
             [otter.materialize :refer [materialize]]
+            [otter.invert :refer [invert]]
             [otter.utils :refer :all]))
 
 (defmulti compose-in-seq_any_any
@@ -52,6 +53,38 @@
 
     :else (panic "unable to compose mismatched subtree types")))
 
+
+(defn compose_retain-subtree_delete-one [a b]
+  (cond-> b
+    (:have-deleted-values? b)
+    (assoc :deleted-values [(materialize (first (:deleted-values b))
+                                         (ot/delta (invert a)))])))
+
+(defn compose_retain-subtree_replace-value [a b]
+  (cond-> b
+    (:have-replaced-value? b)
+    (update :replaced-value materialize (ot/delta (invert a)))))
+
+(defn compose_replace-value_delete-one [a b]
+  (cond-> b
+    (:have-deleted-values? b)
+    (cond->
+      (:have-replaced-value? a)
+      (assoc :deleted-values [(:replaced-value a)])
+
+      (not (:have-replaced-value? a))
+      (assoc :deleted-values []
+             :have-deleted-values? false))))
+
+(defn compose_replace-value_replace-value [a b]
+  (assoc b :replaced-value (:replaced-value a)))
+
+(defn split-next [nexts off]
+  (let [[split-1 split-2] (op/split-op (first nexts) off)]
+    (->> (next nexts)
+         (cons split-2)
+         (cons split-1))))
+
 ;; -------- compose-in-seq
 
 ;; insert-values
@@ -65,16 +98,17 @@
     (cond
       ;; split the insert-values op
       (< (:retain-length b) (count (:values a)))
-      [[(op/insert-values (take (:retain-length b) (:values a)))]
-       (->> (next na)
-            (cons (op/insert-values (drop (:retain-length b) (:values a)))))
-       (next nb)]
+      (let [[split-1 split-2] (op/split-op a (:retain-length b))]
+        [[split-1]
+         (->> (next na)
+              (cons split-2))
+         (next nb)])
       ;; split the retain-range op
       (> (:retain-length b) (count (:values a)))
       [[a]
        (next na)
        (->> (next nb)
-            (cons (update b :retain-length - (count (:values a)))))]
+            (cons (second (op/split-op b (count (:values a))))))]
       ;; exact overlap
       :else
       [[a] (next na) (next nb)])))
@@ -88,14 +122,14 @@
       (< (:delete-length b) (count (:values a)))
       [[]
        (->> (next na)
-            (cons (op/insert-values (drop (:delete-length b) (:values a)))))
+            (cons (second (op/split-op a (:delete-length b)))))
        (next nb)]
       ;; split the delete-range op
       (> (:delete-length b) (count (:values a)))
       [[]
        (next na)
        (->> (next nb)
-            (cons (update b :delete-length - (count (:values a)))))]
+            (cons (second (op/split-op b (count (:values a))))))]
       ;; exact overlap
       :else
       [[] (next na) (next nb)])))
@@ -111,11 +145,7 @@
            (next na)
            (next nb)])
       ;; split the insert-values
-      [[]
-       (->> (next na)
-            (cons (op/insert-values (drop 1 (:values a))))
-            (cons (op/insert-values (take 1 (:values a)))))
-       nb])))
+      [[] (split-next na 1) nb])))
 
 ;;XX similar to :insert-values :retain-subtree
 (defmethod compose-in-seq_any_any [:insert-values :replace-value] [na nb]
@@ -131,11 +161,7 @@
          (next na)
          (next nb)]
       ;; split the insert and retry
-      [[]
-       (->> (next na)
-            (cons (op/insert-values (drop 1 (:values a))))
-            (cons (op/insert-values (take 1 (:values a)))))
-       nb])))
+      [[] (split-next na 1) nb])))
 
 (defmethod compose-in-seq_any_any [:insert-values :mark] [na nb]
   (let [a (first na)
@@ -162,12 +188,12 @@
       [[a]
        (next na)
        (->> (next nb)
-            (cons (update b :retain-length - (:retain-length a))))]
+            (cons (second (op/split-op b (:retain-length a)))))]
       ;; compose b, split a
       (> (:retain-length a) (:retain-length b))
       [[b]
        (->> (next na)
-            (cons (update a :retain-length - (:retain-length b))))
+            (cons (second (op/split-op a (:retain-length b)))))
        (next nb)]
       ;; exact overlap
       :else [[a] (next na) (next nb)])))
@@ -183,11 +209,7 @@
          (next na)
          (next nb)]
       ;; split the retain-range op and retry
-      [[]
-       (->> (next na)
-            (cons (update a :retain-length dec))
-            (cons (assoc a :retain-length 1)))
-       nb])))
+      [[] (split-next na 1) nb])))
 
 (defmethod compose-in-seq_any_any [:retain-range :delete-range] [na nb]
   (let [a (first na)
@@ -195,18 +217,10 @@
     (cond
       ;; split the delete-length op
       (< (:retain-length a) (:delete-length b))
-      [[]
-       na
-       (->> (next nb)
-            (cons (update b :delete-length - (:retain-length a)))
-            (cons (assoc b :delete-length (:retain-length a))))]
+      [[] na (split-next nb (:retain-length a))]
       ;; split the retain-length op
       (> (:retain-length a) (:delete-length b))
-      [[]
-       (->> (next na)
-            (cons (update a :retain-length - (:delete-length b)))
-            (cons (assoc a :retain-length (:delete-length b))))
-       nb]
+      [[] (split-next na (:delete-length b)) nb]
       ;; exact overlap
       :else
       [[b] (next na) (next nb)])))
@@ -217,14 +231,9 @@
     (case (:retain-length a)
       ;; ignore zero-length retains
       0 [[] (next na) nb]
-      ;; 
       1 [[b] (next na) (next nb)]
-      ;; split the retain
-      [[]
-       (->> (next na)
-            (cons (update a :retain-length dec))
-            (cons (assoc a :retain-length 1)))
-       nb])))
+      ;; split the retain-range and retry
+      [[] (split-next na 1) nb])))
 
 (defmethod compose-in-seq_any_any [:retain-range :mark] [na nb]
   ;; compose the mark
@@ -238,7 +247,7 @@
 
 (defmethod compose-in-seq_any_any [:retain-subtree :insert-values] [na nb]
   ;; compose the insert-values op
-  [[(first nb)] na(next nb)])
+  [[(first nb)] na (next nb)])
 
 (defmethod compose-in-seq_any_any [:retain-subtree :retain-range] [na nb]
   (let [a (first na)
@@ -248,12 +257,8 @@
       0 [[] na (next nb)]
       ;; compose retain-subtree
       1 [[a] (next na) (next nb)]
-      ;; split retain-range
-      [[]
-       na
-       (->> (next nb)
-            (cons (update b :retain-length dec))
-            (cons (assoc b :retain-length 1)))])))
+      ;; split retain-range and retry
+      [[] na (split-next nb 1)])))
 
 (defmethod compose-in-seq_any_any [:retain-subtree :retain-subtree] [na nb]
   (let [a (first na)
@@ -270,17 +275,19 @@
       ;; ignore zero-length deletes
       0 [[] na (next nb)]
       ;; delete the subtree
-      1 [[b] (next na) (next nb)]
-      ;; split the delete
-      [[]
-       na
-       (->> (next nb)
-            (cons (update b :delete-length dec))
-            (cons (assoc b :delete-length 1)))])))
+      1 [[(compose_retain-subtree_delete-one a b)]
+         (next na)
+         (next nb)]
+      ;; split the delete and retry
+      [[] na (split-next nb 1)])))
 
 (defmethod compose-in-seq_any_any [:retain-subtree :replace-value] [na nb]
   ;; replace the subtree
-  [[(first nb)] (next na) (next nb)])
+  (let [a (first na)
+        b (first nb)]
+    [[(compose_retain-subtree_replace-value a b)]
+     (next na)
+     (next nb)]))
 
 (defmethod compose-in-seq_any_any [:retain-subtree :mark] [na nb]
   ;; compose the mark
@@ -325,12 +332,8 @@
       0 [[] na (next nb)]
       ;; compose the replace-value op
       1 [[a] (next na) (next nb)]
-      ;; split the retain-range op
-      [[]
-       na
-       (->> (next nb)
-            (cons (update b :retain-length dec))
-            (cons (assoc b :retain-length 1)))])))
+      ;; split the retain-range op and retry
+      [[] na (split-next nb 1)])))
 
 (defmethod compose-in-seq_any_any [:replace-value :retain-subtree] [na nb]
   (let [a (first na)
@@ -340,21 +343,25 @@
      (next nb)]))
 
 (defmethod compose-in-seq_any_any [:replace-value :delete-range] [na nb]
-  (let [b (first nb)]
+  (let [a (first na)
+        b (first nb)]
     (case (:delete-length b)
       ;; ignore zero-length deletes
       0 [[] na (next nb)]
-      1 [[b] (next na) (next nb)]
-      ;; split delete-range op
-      [[]
-       na
-       (->> (next nb)
-            (cons (update b :delete-length dec))
-            (cons (assoc b :delete-length 1)))])))
+      ;; compose the delete-range op
+      1 [[(compose_replace-value_delete-one a b)]
+         (next na)
+         (next nb)]
+      ;; split delete-range op and retry
+      [[] na (split-next nb 1)])))
 
 (defmethod compose-in-seq_any_any [:replace-value :replace-value] [na nb]
-  ;; the second replace, replaces the first
-  [[(first nb)] (next na) (next nb)])
+  (let [a (first na)
+        b (first nb)]
+    ;; the second replace replaces the first
+    [[(compose_replace-value_replace-value a b)]
+     (next na)
+     (next nb)]))
 
 (defmethod compose-in-seq_any_any [:replace-value :mark] [na nb]
   ;; the mark is inserted before the replace
@@ -417,9 +424,9 @@
 (defmethod compose-in-map_any_any [:insert-values :retain-range] [a b]
   a)
 
-;; WARNING: eliminating the delete-range depends on insert-values to be used
-;;          only to insert new values, not to replace existing values.
-;;          Also see 'invalid (delete non-existing)'
+;; Important! eliminating the delete-range depends on insert-values to
+;; be used only to insert new values, not to replace existing values.
+;; Also see 'invalid (delete non-existing)'
 (defmethod compose-in-map_any_any [:insert-values :delete-range] [a b]
   op/retain)
 
@@ -431,7 +438,8 @@
 
 ;; retain-range
 
-;; invalid (insert over existing | retain non-existing)
+;; This is valid becase we allow retain-range as a no-op on non-existing
+;; map entries and nil root nodes.
 (defmethod compose-in-map_any_any [:retain-range :insert-values] [a b]
   b)
 
@@ -451,7 +459,7 @@
 
 ;; invalid (insert over existing | retain non-existing)
 (defmethod compose-in-map_any_any [:retain-subtree :insert-values] [a b]
-  b)
+  (panic "insert-values on a pre-existing map entry or root node"))
 
 (defmethod compose-in-map_any_any [:retain-subtree :retain-range] [a b]
   a)
@@ -460,37 +468,41 @@
   (assoc a :subtree (compose-subtrees (:subtree a) (:subtree b))))
 
 (defmethod compose-in-map_any_any [:retain-subtree :delete-range] [a b]
-  b)
+  (compose_retain-subtree_delete-one a b))
 
 (defmethod compose-in-map_any_any [:retain-subtree :replace-value] [a b]
-  b)
+  (compose_retain-subtree_replace-value a b))
 
 ;; delete-range
 
 (defmethod compose-in-map_any_any [:delete-range :insert-values] [a b]
-  (op/replace-value (first (:values b))))
+  (if (:have-deleted-values? a)
+    (op/replace-value (first (:values b))
+                      (first (:deleted-values a)))
+    (op/replace-value (first (:values b)))))
 
-;; invalid (retain non-existing)
+;; This is valid becase we allow retain-range as a no-op on non-existing
+;; map entries and nil root nodes.
 (defmethod compose-in-map_any_any [:delete-range :retain-range] [a b]
   a)
 
 ;; invalid (retain non-existing)
 (defmethod compose-in-map_any_any [:delete-range :retain-subtree] [a b]
-  (panic ":retain-subtree after a :delete-range is invalid"))
+  (panic "retain-subtree on a non-existing map entry or root node"))
 
 ;; invalid (delete non-existing)
 (defmethod compose-in-map_any_any [:delete-range :delete-range] [a b]
-  b)
+  (panic "delete-range on a non-existing map entry or root node"))
 
 ;; invalid (replace non-existing)
 (defmethod compose-in-map_any_any [:delete-range :replace-value] [a b]
-  b)
+  (panic "replace-value on a non-existing map entry or root node"))
 
 ;; replace-value
 
 ;; invalid (insert over existing | replace non-existing)
 (defmethod compose-in-map_any_any [:replace-value :insert-values] [a b]
-  b)
+  (panic "insert-values on a pre-existing map entry or root node"))
 
 (defmethod compose-in-map_any_any [:replace-value :retain-range] [a b]
   a)
@@ -499,7 +511,7 @@
   (assoc a :value (materialize (:value a) (ot/delta b))))
 
 (defmethod compose-in-map_any_any [:replace-value :delete-range] [a b]
-  b)
+  (compose_replace-value_delete-one a b))
 
 (defmethod compose-in-map_any_any [:replace-value :replace-value] [a b]
-  b)
+  (compose_replace-value_replace-value a b))
