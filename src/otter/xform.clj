@@ -1,5 +1,7 @@
 (ns otter.xform
   (:require [otter.operations :as op]
+            [otter.core :as ot]
+            [otter.materialize :refer [materialize]]
             [otter.utils :refer :all]))
 
 (defmulti xform-in-seq_any_any
@@ -150,6 +152,10 @@
 (defn xform_delete-range_delete-range [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
+    (assert (or (not (and (:have-deleted-values? a)
+                          (:have-deleted-values? b)))
+                (= (:deleted-values a)
+                   (:deleted-values b))))
     (cond
       (= (:delete-length a)
          (:delete-length b))
@@ -230,12 +236,18 @@
 (def xform_retain-one_retain-range
   (reverse-xform xform_retain-range_retain-one))
 
-(defn xform_delete-range_retain-one [context pa pb na nb]
+(defn xform_delete-range_retain-one [update-deleted-value context pa pb na nb]
   (let [a (first na)
         b (first nb)]
     (case (:delete-length a)
       0 [pa pb (next na) nb]
-      1 [(conj pa a)
+      1 [(conj pa (cond-> a
+                    (:have-deleted-values? a)
+                    (update :deleted-values
+                            #(-> %
+                                 first
+                                 (update-deleted-value b)
+                                 vector))))
          pb
          (next na)
          (next nb)]
@@ -247,8 +259,22 @@
               (cons split-1)))
        nb])))
 
-(def xform_retain-one_delete-range
-  (reverse-xform xform_delete-range_retain-one))
+;;XX this can be improved
+(def xform_delete-range_retain-subtree
+  (partial xform_delete-range_retain-one
+           (fn [tree retain-subtree]
+             (materialize tree (ot/delta retain-subtree)))))
+
+(def xform_retain-subtree_delete-range
+  (reverse-xform xform_delete-range_retain-subtree))
+
+(def xform_delete-range_replace-value
+  (partial xform_delete-range_retain-one
+           (fn [_ replace-value]
+             (:value replace-value))))
+
+(def xform_replace-value_delete-range
+  (reverse-xform xform_delete-range_replace-value))
 
 (defn xform_retain-subtree_retain-subtree [context pa pb na nb]
   (let [a (first na)
@@ -264,18 +290,25 @@
         b (first nb)]
     (if (pos? (:lww-tie-breaker context))
       [(conj pa (insert-to-retain b))
-       (conj pb b)
+       (conj pb (cond-> b
+                  (:have-replaced-value? b)
+                  (assoc :replaced-value (:value a))))
        (next na)
        (next nb)]
-      [(conj pa a)
+      [(conj pa (cond-> a
+                  (:have-replaced-value? a)
+                  (assoc :replaced-value (:value b))))
        (conj pb (insert-to-retain a))
        (next na)
        (next nb)])))
 
 (defn xform_retain-subtree_replace-value [context pa pb na nb]
-  (let [b (first nb)]
+  (let [a (first na)
+        b (first nb)]
     [(conj pa (op/retain-range 1))
-     (conj pb b)
+     (conj pb (cond-> b
+                (:have-replaced-value? b)
+                (update :replaced-value materialize (ot/delta a))))
      (next na)
      (next nb)]))
 
@@ -351,7 +384,7 @@
   (xform_retain-subtree_retain-subtree context pa pb na nb))
 
 (defmethod xform-in-seq_any_any [:retain-subtree :delete-range] [context pa pb na nb]
-  (xform_retain-one_delete-range context pa pb na nb))
+  (xform_retain-subtree_delete-range context pa pb na nb))
 
 (defmethod xform-in-seq_any_any [:retain-subtree :replace-value] [context pa pb na nb]
   (xform_retain-subtree_replace-value context pa pb na nb))
@@ -371,13 +404,13 @@
   (xform_delete-range_retain-range context pa pb na nb))
 
 (defmethod xform-in-seq_any_any [:delete-range :retain-subtree] [context pa pb na nb]
-  (xform_delete-range_retain-one context pa pb na nb))
+  (xform_delete-range_retain-subtree context pa pb na nb))
 
 (defmethod xform-in-seq_any_any [:delete-range :delete-range] [context pa pb na nb]
   (xform_delete-range_delete-range context pa pb na nb))
 
 (defmethod xform-in-seq_any_any [:delete-range :replace-value] [context pa pb na nb]
-  (xform_delete-range_retain-one context pa pb na nb))
+  (xform_delete-range_replace-value context pa pb na nb))
 
 (defmethod xform-in-seq_any_any [:delete-range :mark] [context pa pb na nb]
   (xform_any_mark context pa pb na nb))
@@ -400,7 +433,7 @@
   (xform_replace-value_retain-subtree context pa pb na nb))
 
 (defmethod xform-in-seq_any_any [:replace-value :delete-range] [context pa pb na nb]
-  (xform_retain-one_delete-range context pa pb na nb))
+  (xform_replace-value_delete-range context pa pb na nb))
 
 (defmethod xform-in-seq_any_any [:replace-value :replace-value] [context pa pb na nb]
   (xform_replace-value_replace-value context pa pb na nb))
@@ -460,10 +493,48 @@
 
 ;; -------- xform-in-map
 
+(defn reverse-xform-in-map [xform-fn]
+  (fn [context a b]
+    (let [[b a] (xform-fn context b a)]
+      [a b])))
+
 (defn xform-in-map_insert_insert [context a b]
   (if (pos? (:lww-tie-breaker context))
     [op/retain b]
     [a op/retain]))
+
+(defn xform-in-map_replace_replace [context a b]
+  (if (pos? (:lww-tie-breaker context))
+    [op/retain
+     (cond-> b
+       (:have-replaced-value? b)
+       (assoc :replaced-value (:value a)))]
+    [(cond-> a
+       (:have-replaced-value? a)
+       (assoc :replaced-value (:value b)))
+     op/retain]))
+
+(defn xform-in-map_retain-subtree_replace-value [context a b]
+  [op/retain
+   (cond-> b
+     (:have-replaced-value? b)
+     (update :replaced-value materialize (ot/delta a)))])
+
+(def xform-in-map_replace-value_retain-subtree
+  (reverse-xform-in-map xform-in-map_retain-subtree_replace-value))
+
+(defn xform-in-map_delete-range_retain-subtree [context a b]
+  [(cond-> a
+     (:have-deleted-values? a)
+     (update :deleted-values #(-> %
+                                  first
+                                  (materialize (ot/delta b))
+                                  vector)))
+   op/retain])
+
+
+(def xform-in-map_retain-subtree_delete-range
+  (reverse-xform-in-map xform-in-map_delete-range_retain-subtree))
 
 ;; insert-values
 
@@ -527,10 +598,10 @@
      (assoc b :subtree b-subtree)]))
 
 (defmethod xform-in-map_any_any [:retain-subtree :delete-range] [context a b]
-  [op/retain b])
+  (xform-in-map_retain-subtree_delete-range context a b))
 
 (defmethod xform-in-map_any_any [:retain-subtree :replace-value] [context a b]
-  [op/retain b])
+  (xform-in-map_retain-subtree_replace-value context a b))
 
 ;; delete-range
 
@@ -542,11 +613,17 @@
   [a op/retain])
 
 (defmethod xform-in-map_any_any [:delete-range :retain-subtree] [context a b]
-  [a op/retain])
+  (xform-in-map_delete-range_retain-subtree context a b))
 
 (defmethod xform-in-map_any_any [:delete-range :delete-range] [context a b]
+  (assert (or (not (and (:have-deleted-values? a)
+                        (:have-deleted-values? b)))
+               (= (:deleted-values a)
+                  (:deleted-values b))))
   [op/retain op/retain])
 
+;;XX maybe a deleted value should not be replaced to make it equal to
+;;the in-seq handling?
 (defmethod xform-in-map_any_any [:delete-range :replace-value] [context a b]
   [op/retain (op/insert-values [(:value b)])])
 
@@ -560,10 +637,12 @@
   [a op/retain])
 
 (defmethod xform-in-map_any_any [:replace-value :retain-subtree] [context a b]
-  [a op/retain])
+  (xform-in-map_replace-value_retain-subtree context a b))
 
+;;XX maybe a deleted value should not be replaced to make it equal to
+;;the in-seq handling?
 (defmethod xform-in-map_any_any [:replace-value :delete-range] [context a b]
   [(op/insert-values [(:value a)]) op/retain])
 
 (defmethod xform-in-map_any_any [:replace-value :replace-value] [context a b]
-  (xform-in-map_insert_insert context a b))
+  (xform-in-map_replace_replace context a b))

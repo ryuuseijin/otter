@@ -17,7 +17,7 @@
 
 (defn materialize-map [m op-map]
   (reduce (fn [m [k op]]
-            [] (when-not (= 1 (op/op-length op))
+            (when-not (= 1 (op/op-length op))
               (panic "operations on map values must have a length of exactly 1"))
             (materialize-in-map m k op))
           m op-map))

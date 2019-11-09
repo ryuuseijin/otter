@@ -164,14 +164,9 @@
                            (redo undo-state))]
                      (if undo-info
                        [(materialize tree (ot/delta (:delta undo-info)))
-                        (do #_(println "**" (:delta undo-info)
-                                     new-undo-state)
-                            (record new-undo-state undo-info))
-                        (do #_(println "cmp"
-                                     (:delta undo-info)
-                                     xform-delta)
-                            (compose-ops xform-delta
-                                         (:delta undo-info)))]
+                        (record new-undo-state undo-info)
+                        (compose-ops xform-delta
+                                     (:delta undo-info))]
                        [tree new-undo-state xform-delta]))
 
                    :record
@@ -181,7 +176,6 @@
                                                    :lww-tie-breaker 1)
                                     (:root-op delta)
                                     xform-delta)]
-                     #_(println ">>" delta')
                      [(materialize tree (ot/delta delta'))
                       (record undo-state
                               (undo-info delta' tree (= local-remote :local)))
@@ -230,3 +224,113 @@
     [:record (ot/delta (op/delete-range 1)) :remote]
     [:undo]
     [:undo]]))
+
+(deftest undo-prop-gen-3
+  (apply-unredo-actions
+   :valz
+   [[:record (ot/delta (op/delete-range 1)) :local]
+    [:record (ot/delta (op/insert-values [:valq])) :local]
+    [:undo]
+    [:record (ot/delta (op/replace-value {})) :remote]
+    [:record (ot/delta (op/retain-subtree {})) :remote]
+    [:record (ot/delta (op/replace-value [])) :remote]
+    [:record (ot/delta (op/replace-value :val1)) :remote]
+    [:undo]
+    ]))
+
+(deftest undo-prop-gen-4
+  (apply-unredo-actions
+   []
+   '[(:record {:root-op {:type :retain-subtree, :subtree []}}
+              :local)
+     [:undo]
+     [:redo]
+     (:record {:root-op {:type :retain-subtree, :subtree []}}
+              :local)
+     (:record {:root-op {:type :retain-subtree, :subtree []}}
+              :local)
+     (:record {:root-op {:type :retain-subtree, :subtree []}}
+              :local)
+     (:record {:root-op {:type :retain-subtree, :subtree []}}
+              :local)
+     (:record {:root-op {:type :retain-subtree, :subtree []}}
+              :local)
+     [:undo]
+     [:redo]
+     [:undo]
+     [:redo]
+     (:record {:root-op {:type :retain-subtree, :subtree []}}
+              :local)
+     (:record {:root-op {:type :retain-subtree, :subtree []}}
+              :local)
+     (:record {:root-op {:type :retain-subtree, :subtree []}}
+              :local)
+     (:record {:root-op {:type :retain-subtree, :subtree []}}
+              :local)
+     (:record {:root-op {:type :retain-subtree, :subtree []}}
+              :remote)
+     [:undo]
+     [:undo]
+     [:redo]
+     [:undo]
+     [:undo]
+     [:undo]
+     [:undo]
+     [:undo]
+     [:undo]
+     [:undo]
+     (:record {:root-op {:type :replace-value, :value :val2}}
+              :local)
+     (:record {:root-op {:type :replace-value, :value {}}}
+              :local)
+     (:record {:root-op {:type :replace-value, :value {}}}
+              :remote)
+     [:undo]
+     [:undo]
+     [:undo]
+     ]))
+
+(deftest undo-prop-gen-5
+  (testing "local ops win tie breaking"
+    (apply-unredo-actions
+     []
+     '[(:record {:root-op {:type :retain-subtree, :subtree []}}
+                :local)
+       (:record {:root-op {:type :retain-subtree, :subtree []}}
+                :local)
+       (:record {:root-op {:type :retain-subtree, :subtree []}}
+                :remote)
+       (:record {:root-op {:type :replace-value, :value :val2}}
+                :local)
+       (:record {:root-op {:type :replace-value, :value {}}}
+                :remote)
+       [:undo]
+       [:undo]
+       ])))
+
+(deftest undo-prop-gen-6
+  (testing "replace-value has its replaced-value property updated"
+    (apply-unredo-actions
+     {}
+     '[
+       (:record {:root-op {:type :retain-subtree, :subtree {}}} :local)
+       (:record {:root-op {:type :retain-subtree, :subtree {}}} :local)
+       (:record {:root-op {:type :retain-subtree,
+                           :subtree
+                           {"YJDwU" {:type :insert-values, :values [:val1]}}}}
+                :remote)
+       (:record {:root-op {:type :retain-subtree,
+                           :subtree
+                           {"YJDwU" {:type :delete-range,
+                                     :delete-length 1,
+                                     :deleted-values [],
+                                     :have-deleted-values? false}}}}
+                :local)
+       (:record {:root-op {:type :replace-value,
+                           :value :val1,
+                           :replaced-value nil,
+                           :have-replaced-value? false}}
+                :remote)
+       [:undo]
+       [:undo]
+       ])))

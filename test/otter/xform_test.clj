@@ -345,26 +345,53 @@
                 [(op/delete-range 1)]]
                (xform-seqs ctx-pos
                            [(op/retain-subtree [])]
-                           [(op/delete-range 1)]))))
+                           [(op/delete-range 1)])))
+        (testing "with deleted values"
+          (is (= [[]
+                  [(op/delete-range 1 [[:val2 :val1]])]]
+                 (xform-seqs ctx-pos
+                             [(op/retain-subtree [(op/insert-values [:val2])])]
+                             [(op/delete-range 1 [[:val1]])])))))
       (testing "on maps or root nodes"
         (is (= [{:key (op/retain-range 1)}
                 {:key (op/delete-range 1)}]
                (xform-maps ctx-pos
                            {:key (op/retain-subtree {})}
-                           {:key (op/delete-range 1)})))))
+                           {:key (op/delete-range 1)})))
+        (testing "with deleted values"
+          (is (= [{:key (op/retain-range 1)}
+                  {:key (op/delete-range 1 [{:key1 :val1
+                                             :key2 :val2}])}]
+                 (xform-maps
+                  ctx-pos
+                  {:key (op/retain-subtree {:key1 (op/insert-values [:val1])})}
+                  {:key (op/delete-range 1 [{:key2 :val2}])}))))))
     (testing "replace-value"
       (testing "on sequences"
         (is (= [[(op/retain-range 1)]
                 [(op/replace-value :val)]]
                (xform-seqs ctx-pos
                            [(op/retain-subtree [])]
-                           [(op/replace-value :val)]))))
+                           [(op/replace-value :val)])))
+        (testing "with replaced-value"
+          (is (= [[(op/retain-range 1)]
+                  [(op/replace-value :val1 [:val2])]]
+                 (xform-seqs ctx-pos
+                             [(op/retain-subtree [(op/insert-values [:val2])])]
+                             [(op/replace-value :val1 [])])))))
       (testing "on maps"
         (is (= [{:key (op/retain-range 1)}
                 {:key (op/replace-value :val)}]
                (xform-maps ctx-pos
                            {:key (op/retain-subtree {})}
-                           {:key (op/replace-value :val)})))))
+                           {:key (op/replace-value :val)})))
+        (testing "with replaced-value"
+          (is (= [{:key (op/retain-range 1)}
+                  {:key (op/replace-value :val1 {:key :val2})}]
+                 (xform-maps
+                  ctx-pos
+                  {:key (op/retain-subtree {:key (op/insert-values [:val2])})}
+                  {:key (op/replace-value :val1 {})}))))))
     (testing "mark"
       (is (= [[(op/retain-subtree [])]
               [(op/mark "id")
@@ -415,13 +442,26 @@
                 []]
                (xform-seqs ctx-pos
                            [(op/delete-range 1)]
-                           [(op/retain-subtree [])]))))
+                           [(op/retain-subtree [])])))
+        (testing "with deleted values"
+          (is (= [[(op/delete-range 1 [[:val2 :val1]])]
+                  []]
+                 (xform-seqs ctx-pos
+                             [(op/delete-range 1 [[:val1]])]
+                             [(op/retain-subtree [(op/insert-values [:val2])])])))))
       (testing "on maps"
         (is (= [{:key (op/delete-range 1)}
                 {:key (op/retain-range 1)}]
                (xform-maps ctx-pos
                            {:key (op/delete-range 1)}
-                           {:key (op/retain-subtree {})})))))
+                           {:key (op/retain-subtree {})})))
+        (testing "with deleted values"
+          (is (= [{:key (op/delete-range 1 [{:key1 :val1 :key2 :val2}])}
+                  {:key (op/retain-range 1)}]
+                 (xform-maps
+                  ctx-pos
+                  {:key (op/delete-range 1 [{:key1 :val1}])}
+                  {:key (op/retain-subtree {:key2 (op/insert-values [:val2])})}))))))
     (testing "delete-range"
       (testing "on sequences"
         (is (= [[]
@@ -441,7 +481,13 @@
                 []]
                (xform-seqs ctx-pos
                            [(op/delete-range 1)]
-                           [(op/replace-value :val)]))))
+                           [(op/replace-value :val)])))
+        (testing "with replaced value"
+          (is (= [[(op/delete-range 1 [:val2])]
+                  []]
+                 (xform-seqs ctx-pos
+                             [(op/delete-range 1 [:val1])]
+                             [(op/replace-value :val2 :val1)])))))
       (testing "on maps"
         (is (= [{:key (op/retain-range 1)}
                 {:key (op/insert-values [:val])}]
@@ -498,20 +544,39 @@
                 [(op/retain-range 1)]]
                (xform-seqs ctx-pos
                            [(op/replace-value :val)]
-                           [(op/retain-subtree [])]))))
+                           [(op/retain-subtree [])])))
+        (testing "with replaced-value"
+          (is (= [[(op/replace-value :val1 [:val2])]
+                  [(op/retain-range 1)]]
+                 (xform-seqs ctx-pos
+                             [(op/replace-value :val1 [])]
+                             [(op/retain-subtree [(op/insert-values [:val2])])])))))
       (testing "on maps"
         (is (= [{:key (op/replace-value :val)}
                 {:key (op/retain-range 1)}]
                (xform-maps ctx-pos
                            {:key (op/replace-value :val)}
-                           {:key (op/retain-subtree {})})))))
+                           {:key (op/retain-subtree {})})))
+        (testing "with replaced-value"
+          (is (= [{:key (op/replace-value :val1 {:key :val2})}
+                  {:key (op/retain-range 1)}]
+                 (xform-maps
+                  ctx-pos
+                  {:key (op/replace-value :val1 {})}
+                  {:key (op/retain-subtree {:key (op/insert-values [:val2])})}))))))
     (testing "delete-range"
       (testing "on sequences"
         (is (= [[]
                 [(op/delete-range 1)]]
                (xform-seqs ctx-pos
                            [(op/replace-value :val)]
-                           [(op/delete-range 1)]))))
+                           [(op/delete-range 1)])))
+        (testing "with replaced value"
+          (is (= [[]
+                  [(op/delete-range 1 [:val2])]]
+                 (xform-seqs ctx-pos
+                             [(op/replace-value :val2 :val1)]
+                             [(op/delete-range 1 [:val1])])))))
       (testing "on maps or root nodes"
         (is (= [{:key (op/insert-values [:val])}
                 {:key (op/retain-range 1)}]
@@ -525,26 +590,50 @@
                   [(op/replace-value :val2)]]
                  (xform-seqs ctx-pos
                              [(op/replace-value :val1)]
-                             [(op/replace-value :val2)]))))
+                             [(op/replace-value :val2)])))
+          (testing "with replaced value"
+            (is (= [[(op/retain-range 1)]
+                    [(op/replace-value :val2 :val1)]]
+                   (xform-seqs ctx-pos
+                               [(op/replace-value :val1)]
+                               [(op/replace-value :val2 :val0)])))))
         (testing "with negative tie breakers"
           (is (= [[(op/replace-value :val1)]
                   [(op/retain-range 1)]]
                  (xform-seqs ctx-neg
                              [(op/replace-value :val1)]
-                             [(op/replace-value :val2)])))))
+                             [(op/replace-value :val2)])))
+          (testing "with replaced value"
+            (is (= [[(op/replace-value :val1 :val2)]
+                    [(op/retain-range 1)]]
+                   (xform-seqs ctx-neg
+                               [(op/replace-value :val1 :val0)]
+                               [(op/replace-value :val2)]))))))
       (testing "on maps"
         (testing "with positive tie breakers"
           (is (= [{:key (op/retain-range 1)}
                   {:key (op/replace-value :val2)}]
                  (xform-maps ctx-pos
                              {:key (op/replace-value :val1)}
-                             {:key (op/replace-value :val2)}))))
+                             {:key (op/replace-value :val2)})))
+          (testing "with replaced value"
+            (is (= [{:key (op/retain-range 1)}
+                    {:key (op/replace-value :val2 :val1)}]
+                   (xform-maps ctx-pos
+                               {:key (op/replace-value :val1)}
+                               {:key (op/replace-value :val2 :val0)})))))
         (testing "with negative tie breakers"
           (is (= [{:key (op/replace-value :val1)}
                   {:key (op/retain-range 1)}]
                  (xform-maps ctx-neg
                              {:key (op/replace-value :val1)}
-                             {:key (op/replace-value :val2)}))))))
+                             {:key (op/replace-value :val2)})))
+          (testing "with replaced value"
+            (is (= [{:key (op/replace-value :val1 :val2)}
+                    {:key (op/retain-range 1)}]
+                   (xform-maps ctx-neg
+                               {:key (op/replace-value :val1 :val0)}
+                               {:key (op/replace-value :val2)})))))))
     (testing "mark"
       (is (= [[(op/replace-value :val)]
               [(op/mark "id")

@@ -14,27 +14,50 @@
    :combine-local? combine-local?})
 
 (def left-wins-xform-ctx
-  (xform-context :tie-breaker 1
-                 :lww-tie-breaker 1))
+  (xform-context :tie-breaker -1
+                 :lww-tie-breaker -1))
 
-;; (1) a<  2  b<  3
-;;         4  a<'
-;;     b<' 4
+;; Having operations a and b (b can be applied after a), we need to
+;; shift a to the right, across b, so that a can be applied after b.
+;;
+;; To visualize the process,
+;; * we use 0 to denote the empty state,
+;; * uppercase letters to denote other states (e.g. A is the resulting
+;;   state when operation a is applied to empty state 0, AB is the
+;;   result of applying a and b to the empty state, etc.)
+;; * and <() is used to show operation application and direction:
+;;
+;; Starting with the original operations a and b, and the resulting states:
+;;
+;;   AB <(a) B <(b) 0
+;;
+;; we inverse b to get bI:
+;;
+;;   AB <(a) B (bI)> 0
+;;                 ^-------- direction changed
+;;
+;; now a and bI both apply to state B, and therefore we can use xform to
+;; get aX and bIX:
+;;
+;;   A <(bIX) AB <(a) B (bI)> 0 (aX)> A
+;;   ^------^                   ^------^
+;;           \--------------------------\--- the xformed ops
+;;
+;; We have the first operation we need, aX which can now be applied to
+;; the empty state to get A. To get AB again we need an operation that
+;; goes from A to AB. We have bIX wich goes the opposite direction, but
+;; we can fix that by inverting it again:
+;;
+;;  AB <(bIXI) A <(aX) 0
+;;
 (defn shift-undo-info [undo-info-a undo-info-b]
-  #_(println "##" (:delta undo-info-a)
-           (invert (:delta undo-info-b)))
-  (let [[a<' _]
-        (xform-ops left-wins-xform-ctx
-                   (:delta undo-info-a)
-                   (invert (:delta undo-info-b)))
-
-        #_[_ b<']
-        #_(xform-ops left-wins-xform-ctx
-                   a<'
-                   (:delta undo-info-b))]
-    #_(println "&&" a<' (:delta undo-info-b) b<')
-    [(assoc undo-info-a :delta a<')
-     (assoc undo-info-b :delta (invert _) #_b<')]))
+  (let [a        (:delta undo-info-a)
+        b        (:delta undo-info-b)
+        bI       (invert b)
+        [aX bIX] (xform-ops left-wins-xform-ctx a bI)
+        bIXI (invert bIX)]
+    [(assoc undo-info-a :delta aX)
+     (assoc undo-info-b :delta bIXI)]))
 
 (defn compose-undo-info [undo-info-a undo-info-b]
   (update undo-info-a :delta #(compose-ops (:delta undo-info-b) %)))
@@ -85,8 +108,8 @@
                 (update :forward bring-local-to-front))
               (update :forward
                       (fn [forward]
-                        (if (and (:local? undo-info)
-                                 (combine-local? undo-info (peek forward)))
+                        (if (or (not (:local? undo-info))
+                                (combine-local? undo-info (peek forward)))
                           (peek-replace forward compose-undo-info undo-info)
                           (conj forward undo-info)))))))))
 
