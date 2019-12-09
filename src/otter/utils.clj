@@ -37,3 +37,6 @@
 (defn peek-replace [s f & args]
   (-> (pop s)
       (conj (apply f (peek s) args))))
+
+(defn queue []
+  (clojure.lang.PersistentQueue/EMPTY))
