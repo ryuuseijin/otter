@@ -205,6 +205,7 @@
    [:redo]
 ])
 
+;;XX clean up tests
 (deftest undo-prop-gen-1
   (testing "whether composition is done in the right order in apply-undo-actions"
     (is (= {}
