@@ -2,7 +2,7 @@
   (:require [otter.operations :as op]
             [otter.utils :refer :all]))
 
-(declare optimize-op)
+(declare optimize)
 
 (defmulti optimize-ops-in-seq (fn [prevs op]
                                 (:type op)))
@@ -31,7 +31,7 @@
   (maybe-join prevs op))
 
 (defmethod optimize-ops-in-seq :retain-subtree [prevs op]
-  (keep-op prevs (optimize-op op)))
+  (keep-op prevs (optimize op)))
 
 (defmethod optimize-ops-in-seq :delete-range [prevs op]
   (maybe-join prevs op))
@@ -49,7 +49,7 @@
 (defn optimize-map [op-map]
   (->> op-map
        (into {} (comp (map (fn [[k op]]
-                             [k (optimize-op op)]))
+                             [k (optimize op)]))
                       (filter (fn [[k op]]
                                 (not= :retain-range (:type op))))))))
 
