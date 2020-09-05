@@ -58,12 +58,12 @@
   (cond-> b
     (:have-deleted-values? b)
     (assoc :deleted-values [(materialize (first (:deleted-values b))
-                                         (ot/delta (invert a)))])))
+                                         (invert a))])))
 
 (defn compose_retain-subtree_replace-value [a b]
   (cond-> b
     (:have-replaced-value? b)
-    (update :replaced-value materialize (ot/delta (invert a)))))
+    (update :replaced-value materialize (invert a))))
 
 (defn compose_replace-value_delete-one [a b]
   (cond-> b
@@ -141,7 +141,7 @@
       0 [[] (next na) nb]
       1 (let [a (first na)
               b (first nb)]
-          [[(assoc a :values [(materialize (first (:values a)) (ot/delta b))])]
+          [[(assoc a :values [(materialize (first (:values a)) b)])]
            (next na)
            (next nb)])
       ;; split the insert-values
@@ -338,7 +338,7 @@
 (defmethod compose-in-seq_any_any [:replace-value :retain-subtree] [na nb]
   (let [a (first na)
         b (first nb)]
-    [[(assoc a :value (materialize (:value a) (ot/delta b)))]
+    [[(assoc a :value (materialize (:value a) b))]
      (next na)
      (next nb)]))
 
@@ -431,7 +431,7 @@
   op/retain)
 
 (defmethod compose-in-map_any_any [:insert-values :retain-subtree] [a b]
-  (assoc a :values [(materialize (first (:values a)) (ot/delta b))]))
+  (assoc a :values [(materialize (first (:values a)) b)]))
 
 (defmethod compose-in-map_any_any [:insert-values :replace-value] [a b]
   (assoc a :values [(:value b)]))
@@ -508,7 +508,7 @@
   a)
 
 (defmethod compose-in-map_any_any [:replace-value :retain-subtree] [a b]
-  (assoc a :value (materialize (:value a) (ot/delta b))))
+  (assoc a :value (materialize (:value a) b)))
 
 (defmethod compose-in-map_any_any [:replace-value :delete-range] [a b]
   (compose_replace-value_delete-one a b))

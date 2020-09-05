@@ -17,19 +17,20 @@
 
 (defn materialize-map [m op-map]
   (reduce (fn [m [k op]]
+            (print k op)
             (when-not (= 1 (op/op-length op))
               (panic "operations on map values must have a length of exactly 1"))
             (materialize-in-map m k op))
           m op-map))
 
-(defn materialize [tree delta]
+(defn materialize [tree op]
   (-> {}
       ;; a nil root node is interpreted as a non-existing tree to
       ;; allow insert-values, which is in contrast to nil map values
       ;; where insert-values is not allowed and replace-value has to
       ;; be used instead
       (cond-> (some? tree) (assoc :k tree))
-      (materialize-map {:k (:root-op delta)})
+      (materialize-map {:k op})
       :k))
 
 (defn materialize-subtree [tree op-subtree]

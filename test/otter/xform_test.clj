@@ -15,8 +15,7 @@
 
 (def convergence-prop
   (prop/for-all [[tree delta-a delta-b]
-                 (gen/let [tree (gen/no-shrink
-                                 (otter-gen/tree-gen otter-gen/node-gen))
+                 (gen/let [tree (gen/no-shrink (otter-gen/tree-gen otter-gen/node-gen))
                            num-ops-1 (gen/choose 0 100)
                            num-ops-2 (gen/choose 0 100)
                            delta-a (otter-gen/delta-gen num-ops-1 tree)
@@ -25,11 +24,11 @@
      (let [[delta-a' delta-b']
            (xform ctx-pos delta-a delta-b)
            tree-1 (-> tree
-                      (materialize delta-a)
-                      (materialize delta-b'))
+                      (materialize (:root-op delta-a))
+                      (materialize (:root-op delta-b')))
            tree-2 (-> tree
-                      (materialize delta-b)
-                      (materialize delta-a'))]
+                      (materialize (:root-op delta-b))
+                      (materialize (:root-op delta-a')))]
        (is (= tree-1 tree-2)))))
 
 (deftest generative-1

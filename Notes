@@ -1,0 +1,3 @@
+TODO
+- generative test with more than one delta; specifically, when
+  implementing TP2 we should make sure to test with 2 inserts and a delete

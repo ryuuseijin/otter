@@ -1,6 +1,5 @@
 (ns otter.xform
   (:require [otter.operations :as op]
-            [otter.core :as ot]
             [otter.materialize :refer [materialize]]
             [otter.utils :refer :all]))
 
@@ -15,15 +14,15 @@
      (:type b)]))
 
 (defn make-tie-breaker [revision-a revision-b]
-  (let [id-breaker (compare (-> revision-a :id :process-id)
-                            (-> revision-b :id :process-id))]
+  (let [id-breaker (compare (-> revision-a :id :pid)
+                            (-> revision-b :id :pid))]
     (if-not (zero? id-breaker)
       id-breaker
       (let [time-breaker (compare (:time revision-a)
                                   (:time revision-b))]
         (if-not (zero? time-breaker)
           time-breaker
-          (panic "unable to tie-break operations with identical process-id and time"))))))
+          (panic "unable to tie-break operations with identical pid and time"))))))
 
 (defn make-lww-tie-breaker [revision-a revision-b]
   (let [time-breaker (compare (:time revision-a)
@@ -263,7 +262,7 @@
 (def xform_delete-range_retain-subtree
   (partial xform_delete-range_retain-one
            (fn [tree retain-subtree]
-             (materialize tree (ot/delta retain-subtree)))))
+             (materialize tree retain-subtree))))
 
 (def xform_retain-subtree_delete-range
   (reverse-xform xform_delete-range_retain-subtree))
@@ -308,7 +307,7 @@
     [(conj pa (op/retain-range 1))
      (conj pb (cond-> b
                 (:have-replaced-value? b)
-                (update :replaced-value materialize (ot/delta a))))
+                (update :replaced-value materialize a)))
      (next na)
      (next nb)]))
 
@@ -518,7 +517,7 @@
   [op/retain
    (cond-> b
      (:have-replaced-value? b)
-     (update :replaced-value materialize (ot/delta a)))])
+     (update :replaced-value materialize a))])
 
 (def xform-in-map_replace-value_retain-subtree
   (reverse-xform-in-map xform-in-map_retain-subtree_replace-value))
@@ -528,7 +527,7 @@
      (:have-deleted-values? a)
      (update :deleted-values #(-> %
                                   first
-                                  (materialize (ot/delta b))
+                                  (materialize b)
                                   vector)))
    op/retain])
 

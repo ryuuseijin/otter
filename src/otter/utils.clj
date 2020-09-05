@@ -40,3 +40,6 @@
 
 (defn queue []
   (clojure.lang.PersistentQueue/EMPTY))
+
+(defn first-matching [pred s]
+  (first (filter pred s)))

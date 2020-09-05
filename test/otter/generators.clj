@@ -114,7 +114,7 @@
 (defn single-op-deltas-gen [num-deltas tree]
   (if (pos? num-deltas)
     (gen/let [delta-1 (single-op-delta-gen tree)
-              r (single-op-deltas-gen (dec num-deltas) (materialize tree delta-1))]
+              r (single-op-deltas-gen (dec num-deltas) (materialize tree (:root-op delta-1)))]
       (cons delta-1 r))
     (gen/return [])))
 
@@ -133,6 +133,6 @@
   ([tree num-deltas]
    (if (pos? num-deltas)
      (gen/let [delta (delta-gen 10 tree) ;;XX parameterize
-               deltas (deltas-gen (materialize tree delta) (dec num-deltas))]
+               deltas (deltas-gen (materialize tree (:root-op delta)) (dec num-deltas))]
        (cons delta deltas))
      (gen/return []))))

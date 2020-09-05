@@ -30,7 +30,10 @@
    (assoc (delete-range delete-length [])
           :have-deleted-values? false)))
 
-;; - concurrent deletes eliminate replace-value ops in sequnces but not in maps
+;; - concurrent deletes eliminate replace-value ops in sequences but not
+;;   in maps because in sequences we would lose the identity of the
+;;   resulting insert (xform replace and delete = insert) but with maps
+;;   we don't (the map key is the identifier)
 ;; - can not be used to replace non-existing values in maps
 ;; - can not be used to replace a nil root node (empty tree)
 (defn replace-value

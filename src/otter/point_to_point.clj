@@ -1,44 +1,56 @@
 (ns otter.point-to-point
   (:refer-clojure :exclude [send])
-  (:require [otter.core :as ot]
+  (:require [clojure.string :as string]
+            [otter.core :as ot]
             [otter.xform :refer [xform-revisions]]
             [otter.utils :refer [panic queue]]))
 
 (defn transform-2d [revision-a revisions-b]
-  (reduce xform-revisions revision-a revisions-b))
+  (reduce (fn [[rev-a revs-b] rev-b]
+            (let [[rev-a' rev-b'] (xform-revisions rev-a rev-b)]
+              [rev-a' (conj revs-b rev-b')]))
+          [revision-a []]
+          revisions-b))
 
 (def empty-state {:unacked (queue)
                   :sent 0
                   :received 0})
 
-(defn message [revision {:keys [sent received] :as state}]
+(defn message [{:keys [sent received] :as state} revision]
   {:revision revision
    :counters [sent received]})
 
-(defn get-counters [state {[sent-check received-ack] :counters
-                           :as message}]
-  (when-not (<= received-ack (:sent state))
-    (panic "the number of acknowledged messages must be less or equal than the number of sent messages"))
-  (when-not (= sent-check (inc (:received state)))
-    (panic "messages must not be out of order and messages must not be missing"))
+(defn validate [state {[sent-check received-ack] :counters
+                       :as message}]
+  (cond-> []
+    (> received-ack (:sent state))
+    (conj "sender must not acknowledge more messages than it received")
 
-  {:sent-check sent-check
-   :received-ack received-ack})
+    (not= sent-check (:received state))
+    (conj "messages must not be out of order or missing")))
 
 (defn send [state revision]
   [(-> state
        (update :unacked conj revision)
        (update :sent inc))
-   (message revision state)])
+   (message state revision)])
 
-(defn receive [state message]
-  (let [{:keys [sent-check received-ack]} (get-counters state message)
-        keep (- (:sent state) received-ack)
+(defn send-ack [state]
+  (message state nil))
+
+(defn receive [state {[sent-check received-ack] :counters
+                      :keys [revision] ;; may be nil
+                      :as message}]
+  (when-let [errors (not-empty (validate state message))]
+    (panic (string/join "; " errors)))
+  (let [keep (- (:sent state) received-ack)
         have (count (:unacked state))
-        pop-cnt (- have keep)
         new-state (-> state
                       (update :unacked #(-> (iterate pop %)
-                                            (nth pop-cnt)))
-                      (assoc :received inc))]
-    [new-state
-     (transform-2d (:revision message) (:unacked new-state))]))
+                                            (nth (- have keep))))
+                      (update :received inc))]
+    (if (nil? revision)
+      [new-state nil]
+      (let [[new-rev new-unacked-revs] (transform-2d revision (:unacked new-state))]
+        [(assoc new-state :unacked new-unacked-revs)
+         new-rev]))))

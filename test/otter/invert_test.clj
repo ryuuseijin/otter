@@ -16,8 +16,8 @@
                            delta (otter-gen/delta-gen num-ops tree)]
                    [tree delta])]
     (is (= tree (-> tree
-                    (materialize delta)
-                    (materialize (ot/delta (invert (:root-op delta) tree))))))))
+                    (materialize (:root-op delta))
+                    (materialize (invert (:root-op delta) tree)))))))
 
 (deftest insert-values
   (testing "invert insert-values"

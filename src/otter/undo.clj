@@ -5,7 +5,6 @@
             [otter.compose :refer [compose-ops]]
             [otter.invert :refer [invert] :as invert]
             [otter.delta :refer [optimize]]
-            [otter.materialize :refer [materialize]]
             [otter.utils :refer :all]))
 
 (defn empty-state [combine-local?]

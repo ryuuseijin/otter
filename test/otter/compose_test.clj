@@ -16,8 +16,8 @@
                            num-ops (gen/choose 0 100)
                            deltas (otter-gen/single-op-deltas-gen num-ops tree)]
                    [tree deltas])]
-     (is (= (reduce materialize tree deltas)
-            (materialize tree (reduce compose deltas))))))
+     (is (= (reduce materialize tree (map :root-op deltas))
+            (materialize tree (:root-op (reduce compose deltas)))))))
 
 (deftest insert-values
   (testing "composing insert-values with"

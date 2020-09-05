@@ -163,7 +163,7 @@
                            (undo undo-state)
                            (redo undo-state))]
                      (if undo-info
-                       [(materialize tree (ot/delta (:delta undo-info)))
+                       [(materialize tree (:delta undo-info))
                         (record new-undo-state undo-info)
                         (compose-ops xform-delta
                                      (:delta undo-info))]
@@ -176,7 +176,7 @@
                                                    :lww-tie-breaker 1)
                                     (:root-op delta)
                                     xform-delta)]
-                     [(materialize tree (ot/delta delta'))
+                     [(materialize tree delta')
                       (record undo-state
                               (undo-info delta' tree (= local-remote :local)))
                       xform-delta'])))
