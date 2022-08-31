@@ -60,12 +60,12 @@
 (defn seq-op-type [s]
   (if (symbol? (first s))
     (first s)
-    :retain-seq))
+    :retain-subtree))
 
 (defn op-type-in-seq [val]
   (cond
     (number? val)     :retain-range
-    (map? val)        :retain-map
+    (map? val)        :retain-subtree
     (sequential? val) (seq-op-type val)
     :else (panic "invalid value in sequence")))
 
@@ -73,6 +73,6 @@
   (cond
     ;; we do not allow bare integers as map values/roots for now because they would always be 1
     ;; could reconsider this if it turns out to make things more consistent
-    (map? val) :retain-map
+    (map? val)        :retain-subtree
     (sequential? val) (seq-op-type val)
     :else (panic "invalid root value")))

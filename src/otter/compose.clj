@@ -29,6 +29,18 @@
         (recur (into r ops) na' nb'))
       r)))
 
+(defn compose-subtrees [a b]
+  (cond
+    (and (sequential? a)
+         (sequential? b))
+    (compose-seqs a b)
+
+    (and (map? a)
+         (map? b))
+    (compmose-maps a b)
+
+    :else (panic "mismatched subtrees encountered (one seq, one map)")))
+
 (defn compose
   ([] (ot/delta op/retain))
   ([op-a op-b]
