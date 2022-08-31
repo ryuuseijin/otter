@@ -6,12 +6,11 @@
 
 ;; no special handling for sequences, just call invert on the operation,
 ;; except for :retain-range which is returned as-is
-(defmethod invert-in-seq :retain-map [op] (invert op))
-(defmethod invert-in-seq :retain-seq [op] (invert op))
-(defmethod invert-in-seq :retain     [op] (invert op))
-(defmethod invert-in-seq :insert     [op] (invert op))
-(defmethod invert-in-seq :delete     [op] (invert op))
-(defmethod invert-in-seq :retain-range [op] op)
+(defmethod invert-in-seq :retain         [op] (invert op))
+(defmethod invert-in-seq :insert         [op] (invert op))
+(defmethod invert-in-seq :delete         [op] (invert op))
+(defmethod invert-in-seq :retain-subtree [op] (invert op))
+(defmethod invert-in-seq :retain-range   [op] op)
 
 (defn invert-seq [ops]
   (into [] (map invert-in-seq) ops))
@@ -19,11 +18,10 @@
 (defn invert-map [op-map]
   (into {} (map-vals invert-op) op-map))
 
-(defmethod invert :retain-map [op]
-  (invert-map op))
-
-(defmethod invert :retain-seq [op]
-  (invert-seq op))
+(defmethod invert :retain-subtree [op]
+  (cond
+    (sequential? op) (invert-seq op)
+    (map? op       ) (invert-map op)))
 
 (defmethod invert :retain [op]
   (cons 'retain (invert-seq (next op))))
