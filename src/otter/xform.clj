@@ -1,78 +1,103 @@
 (ns otter.xform
-  (:require [otter.operations :as op]))
-
-(defn tie-breaker [rev-a rev-b]
-  (let [id-breaker (compare (:pid rev-a)
-                            (:pid rev-b))]
-    (if-not (zero? id-breaker)
-      id-breaker
-      (let [time-breaker (compare (:time rev-a)
-                                  (:time rev-b))]
-        (if-not (zero? time-breaker)
-          time-breaker
-          (panic "unable to tie-break operations with identical pid and time"))))))
-
-(defn lww-tie-breaker [rev-a rev-b]
-  (let [time-breaker (compare (:time rev-a)
-                              (:time rev-b))]
-    (if-not (zero? time-breaker)
-      time-breaker
-      (tie-breaker rev-a rev-b))))
+  (:require [otter.operations :as op]
+            [otter.materialize :refer [materialize]]
+            [otter.utils :refer :all]))
 
 (defmulti xform-in-seq
-  (fn [tie-breaker pa pb na nb]
+  (fn [context pa pb na nb]
     [(op-type-in-seq (first na))
      (op-type-in-seq (first nb))]))
 
 (defmulti xform-roots
-  (fn [tie-breaker a b]
+  (fn [context a b]
     [(op-type-as-root a)
      (op-type-as-root b)]))
 
-(defn xform-seqs [tie-breaker ops-a ops-b]
-  (loop [pa []     ;; prev a
-         pb []     ;; prev b
-         na ops-a  ;; next a
-         nb ops-b] ;; next b
-    (if (or (seq na) (seq nb))
-      (let [[pa' pb' na' nb'] (xform-in-seq tie-breaker pa pb na nb)]
-        (recur pa' pb' na' nb'))
-      [pa pb])))
+(defn make-tie-breaker [revision-a revision-b]
+  (let [id-breaker (compare (-> revision-a :id :pid)
+                            (-> revision-b :id :pid))]
+    (if-not (zero? id-breaker)
+      id-breaker
+      (let [time-breaker (compare (:time revision-a)
+                                  (:time revision-b))]
+        (if-not (zero? time-breaker)
+          time-breaker
+          (panic "unable to tie-break operations with identical pid and time"))))))
 
-(defn xform-maps [tie-breaker map-a map-b]
-  (->> (select-keys map-a (keys map-b))
-       (reduce (fn [[map-a map-b] [k op-a]]
-                 (let [[op-a' op-b'] (xform-roots tie-breaker op-a (get map-b k))]
-                   [(assoc map-a k op-a')
-                    (assoc map-b k op-b')]))
-               [map-a map-b])))
+(defn make-lww-tie-breaker [revision-a revision-b]
+  (let [time-breaker (compare (:time revision-a)
+                              (:time revision-b))]
+    (if-not (zero? time-breaker)
+      time-breaker
+      (make-tie-breaker revision-a revision-b))))
 
-
-(defn xform-delta [delta-a delta-b]
-  (let [[op-a op-b] (xform-roots tie-breaker (:root delta-a) (:root delta-b))]
-    [(assoc delta-a :root op-a)
-     (assoc delta-b :root op-b)]))
+(defn insert-or-replace-to-retain [insert-or-replace]
+  (list 'retain (op/length insert)))
 
 (defn reverse-xform [xform-fn]
   (fn [context pa pb na nb]
     (let [[pb' pa' nb' na'] (xform-fn context pb pa nb na)]
       [pa' pb' na' nb'])))
 
-(defn insert-to-retain [insert]
-  (op/retain (op/length insert)))
+(defn xform-seqs [context ops-a ops-b]
+  (loop [pa []     ;; prev a
+         pb []     ;; prev b
+         na ops-a  ;; next a
+         nb ops-b] ;; next b
+    (if (or (seq na) (seq nb))
+      (let [[pa' pb' na' nb'] (xform-in-seq context pa pb na nb)]
+        (recur pa' pb' na' nb'))
+      [pa pb])))
+
+(defn xform-maps [context map-a map-b]
+  (->> (select-keys map-a (keys map-b))
+       (reduce (fn [[map-a map-b] [k op-a]]
+                 ;;XX no-op retains could be filtered-out immediately
+                 (let [[op-a' op-b'] (xform-roots context op-a (get map-b k))]
+                   [(assoc map-a k op-a')
+                    (assoc map-b k op-b')]))
+               [map-a map-b])))
+
+(defn xform-subtrees [context subtree-a subtree-b]
+  (cond
+    (and (sequential? subtree-a)
+         (sequential? subtree-b))
+    (xform-seqs context subtree-a subtree-b)
+
+    (and (map? subtree-a)
+         (map? subtree-b))
+    (xform-maps context subtree-a subtree-b)
+
+    :else (panic "unable to xform mismatched subtree types")))
+
+(defn xform-deltas [context delta-a delta-b]
+  (let [[op-a op-b] (xform-roots context (:root-op delta-a) (:root-op delta-b))]
+    [(assoc delta-a :root-op op-a)
+     (assoc delta-b :root-op op-b)]))
+
+(defn xform-context [& {:keys [tie-breaker lww-tie-breaker] :as context}]
+  context)
+
+(defn xform-revisions [revision-a revision-b]
+  (let [[delta-a delta-b]
+        (xform-deltas (xform-context
+                       :tie-breaker (make-tie-breaker revision-a revision-b)
+                       :lww-tie-breaker (make-lww-tie-breaker revision-a revision-b))
+                      (:delta revision-a)
+                      (:delta revision-b))]
+    [(assoc revision-a :delta delta-a)
+     (assoc revision-b :delta delta-b)]))
 
 ;; -------- xform-in-seq
 
-;;
 (defn xform_insert_any [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
     [(conj pa a)
-     (conj pb (insert-to-retain a))
+     (conj pb (insert-or-replace-to-retain a))
      (next na)
      nb]))
 
-;;
 (def xform_any_insert
   (reverse-xform xform_insert_any))
 
@@ -81,187 +106,191 @@
     (xform_insert_any context pa pb na nb)
     (xform_any_insert context pa pb na nb)))
 
-;;
 (defn xform_retain-range_retain-range [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    (cond
-      (= a b)
+    (case (op/compare-length a b)
+      :equal
       [(conj pa a)
        (conj pb b)
        (next na)
        (next nb)]
 
-      (< a b)
-      (let [[split-1 split-2] (op/split b a)]
+      :smaller
+      (let [[split-1 split-2] (op/split b (op/length a))]
         [(conj pa a)
          (conj pb split-1)
          (next na)
          (->> (next nb)
               (cons split-2))])
 
-      (> a b)
-      (let [[split-1 split-2] (op/split a b)]
+      :larger
+      (let [[split-1 split-2] (op/split a (op/length b))]
         [(conj pa split-1)
          (conj pb b)
          (->> (next na)
               (cons split-2))
-         (next nb)])
+         (next nb)]))))
 
-      :else (unreachable))))
-
-;;
 (defn xform_delete_delete [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    (cond
-      (= (op/length a)
-         (op/length b))
+    (case (op/compare-length a b)
+      :equal
       [pa
        pb
        (next na)
        (next nb)]
 
-      (< (op/length a)
-         (op/length b))
+      :smaller
       [pa
        pb
        (next na)
        (->> (next nb)
-            (cons (second (op/split-op b (op/length a)))))]
+            (cons (second (op/split b (op/length a)))))]
 
-      (> (op/length a)
-         (op/length b))
+      :larger
       [pa
        pb
        (->> (next na)
-            (cons (second (op/split-op a (op/length b)))))
-       (next nb)]
-
-      :else (unreachable))))
+            (cons (second (op/split a (op/length b)))))
+       (next nb)])))
 
 
-;;
 (defn xform_retain-range_delete [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    (cond
-      (= a (op/length b))
+    (case (op/compare-length a b)
+      :equal
       [pa
        (conj pb b)
        (next na)
        (next nb)]
 
-      (< a (op/length b))
-      (let [[split-1 split-2] (op/split-op b a)]
+      :smaller
+      (let [[split-1 split-2] (op/split b (op/length a))]
         [pa
          (conj pb split-1)
          (next na)
          (->> (next nb)
               (cons split-2))])
 
-      (> a (op/length b))
+      :larger
       [pa
        (conj pb b)
        (->> (next na)
-            (cons (second (op/split-op a (op/length b)))))
-       (next nb)]
+            (cons (second (op/split a (op/length b)))))
+       (next nb)])))
 
-      :else (unreachable))))
-
-;;
 (def xform_delete_retain-range
-  (reverse-xform xform_retain-range_delete-range))
+  (reverse-xform xform_retain-range_delete))
 
-;;
 (defn xform_retain-range_retain-one [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    (case a
-      0 [pa pb (next na) nb]
-      1 [(conj pa a)
-         (conj pb b)
-         (next na)
-         (next nb)]
+    (case (op/compare-length a 1)
+      :smaller
+      [pa pb (next na) nb]
+
+      :equal
+      [(conj pa a)
+       (conj pb b)
+       (next na)
+       (next nb)]
+
+      :larger
       [pa
        pb
-       (->> (next na)
-            (cons (- a 1))
-            (cons 1))
-       nb])))
-
-;;
-(def xform_retain-one_retain-range
-  (reverse-xform xform_retain-range_retain-one))
-
-;;
-(defn xform_delete_retain-one [context pa pb na nb]
-  (let [a (first na)
-        b (first nb)]
-    (case (op/length a) ;;don't need length, just >1? XX
-      0 [pa pb (next na) nb]
-      1 [(conj pa (materialize (second a) b)) ;; b may be retain-subtree or replace-value XX
-         pb
-         (next na)
-         (next nb)]
-      [pa
-       pb
-       (let [[split-1 split-2] (op/split-op a 1)]
+       (let [[split-1 split-2] (op/split a 1)]
          (->> (next na)
               (cons split-2)
               (cons split-1)))
        nb])))
 
-;;
-(def xform_retain-one_delete
-  (reverse-xform xform_delete_retain-one))
+(def xform_retain-one_retain-range
+  (reverse-xform xform_retain-range_retain-one))
 
-;;
-(defn xform_retain-seq_retain-seq [context pa pb na nb]
+(defn xform_delete_retain-one [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    (let [[a' b'] (xform-seqs context a b)]
+    (case (op/compare-length a 1)
+      :smaller
+      [pa pb (next na) nb]
+
+      :equal
+      [(conj pa (list* (first a)
+                       ;; b may be retain-subtree or replace
+                       (materialize (first (op/values a)) b)
+                       (rest (op/values a))))
+       pb
+       (next na)
+       (next nb)]
+
+      :larger
+      [pa
+       pb
+       (let [[split-1 split-2] (op/split a 1)]
+         (->> (next na)
+              (cons split-2)
+              (cons split-1)))
+       nb])))
+
+
+(def xform_delete_retain-subtree xform_delete_retain-one)
+(def xform_retain-subtree_delete (reverse-xform xform_delete_retain-subtree))
+(def xform_delete_replace  xform_delete_retain-one)
+(def xform_replace_delete  (reverse-xform xform_delete_replace))
+
+(defn xform_retain-subtree_retain-subtree [context pa pb na nb]
+  (let [a (first na)
+        b (first nb)]
+    (let [[a' b'] (xform-subtrees context a b)]
       [(conj pa a')
        (conj pb b')
        (next na)
        (next nb)])))
 
-(defn xform_replace-value_replace-value [context pa pb na nb]
+(defn xform_replace_replace [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
     (if (pos? (:lww-tie-breaker context))
-      [(conj pa (insert-to-retain b))
-       (conj pb (cond-> b
-                  (:have-replaced-value? b)
-                  (assoc :replaced-value (:value a))))
+      ;; b wins
+      [(conj pa (insert-or-replace-to-retain b))
+       (conj pb (list (first b)
+                      (second  (op/values a))
+                      (second (op/values b))))
        (next na)
        (next nb)]
-      [(conj pa (cond-> a
-                  (:have-replaced-value? a)
-                  (assoc :replaced-value (:value b))))
-       (conj pb (insert-to-retain a))
+      ;; a wins
+      [(conj pa (list (first a)
+                      (second  (op/values b))
+                      (second (op/values a))))
+       (conj pb (insert-or-replace-to-retain a))
        (next na)
        (next nb)])))
 
-(defn xform_retain-subtree_replace-value [context pa pb na nb]
+(defn xform_retain-subtree_replace [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    [(conj pa (op/retain-range 1))
-     (conj pb (cond-> b
-                (:have-replaced-value? b)
-                (update :replaced-value materialize a)))
+    [(conj pa '(retain))
+     (conj pb (list (first b)
+                    (materialize (first (op/values b)) a)
+                    (second (op/values b))))
      (next na)
      (next nb)]))
 
-(def xform_replace-value_retain-subtree
-  (reverse-xform xform_retain-subtree_replace-value))
+(def xform_replace_retain-subtree
+  (reverse-xform xform_retain-subtree_replace))
 
 ;; insert
 
 (defmethod xform-in-seq [:insert :insert] [context pa pb na nb]
   (xform_insert_insert context pa pb na nb))
 
-(defmethod xform-in-seq [:insert :retain] [context pa pb na nb]
+(defmethod xform-in-seq [:insert :retain-range] [context pa pb na nb]
+  (xform_insert_any context pa pb na nb))
+
+(defmethod xform-in-seq [:insert :retain-subtree] [context pa pb na nb]
   (xform_insert_any context pa pb na nb))
 
 (defmethod xform-in-seq [:insert :delete] [context pa pb na nb]
@@ -270,98 +299,90 @@
 (defmethod xform-in-seq [:insert :replace] [context pa pb na nb]
   (xform_insert_any context pa pb na nb))
 
-(defmethod xform-in-seq [:insert :retain-seq] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
-
-(defmethod xform-in-seq [:insert :retain-map] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
-
-(defmethod xform-in-seq [:insert :retain-range] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
-
 (defmethod xform-in-seq [:insert nil] [context pa pb na nb]
   (xform_insert_any context pa pb na nb))
 
-;; retain
+;; retain-range
 
-(defmethod xform-in-seq [:retain :insert] [context pa pb na nb]
+(defmethod xform-in-seq [:retain-range :insert] [context pa pb na nb]
   (xform_any_insert context pa pb na nb))
 
-(defmethod xform-in-seq [:retain :retain] [context pa pb na nb]
+(defmethod xform-in-seq [:retain-range :retain-range] [context pa pb na nb]
   (xform_retain-range_retain-range context pa pb na nb))
 
-(defmethod xform-in-seq [:retain :delete] [context pa pb na nb]
-  (xform_retain-range_delete-range context pa pb na nb))
-
-(defmethod xform-in-seq [:retain :replace] [context pa pb na nb]
+(defmethod xform-in-seq [:retain-range :retain-subtree] [context pa pb na nb]
   (xform_retain-range_retain-one context pa pb na nb))
 
-(defmethod xform-in-seq [:retain :retain-seq] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
+(defmethod xform-in-seq [:retain-range :delete] [context pa pb na nb]
+  (xform_retain-range_delete context pa pb na nb))
 
-(defmethod xform-in-seq [:retain :retain-map] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
+(defmethod xform-in-seq [:retain-range :replace] [context pa pb na nb]
+  (xform_retain-range_retain-one context pa pb na nb))
 
-(defmethod xform-in-seq [:retain :retain-range] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
-
-(defmethod xform-in-seq [:retain nil] [context pa pb na nb]
+(defmethod xform-in-seq [:retain-range nil] [context pa pb na nb]
   (xform_retain-range_retain-range context pa pb na (cons (first na) nb)))
+
+;; retain-subtree
+
+(defmethod xform-in-seq [:retain-subtree :insert] [context pa pb na nb]
+  (xform_any_insert context pa pb na nb))
+
+(defmethod xform-in-seq [:retain-subtree :retain-range] [context pa pb na nb]
+  (xform_retain-one_retain-range context pa pb na nb))
+
+(defmethod xform-in-seq [:retain-subtree :retain-subtree] [context pa pb na nb]
+  (xform_retain-subtree_retain-subtree context pa pb na nb))
+
+(defmethod xform-in-seq [:retain-subtree :delete] [context pa pb na nb]
+  (xform_retain-subtree_delete context pa pb na nb))
+
+(defmethod xform-in-seq [:retain-subtree :replace] [context pa pb na nb]
+  (xform_retain-subtree_replace context pa pb na nb))
+
+(defmethod xform-in-seq [:retain-subtree nil] [context pa pb na nb]
+  (xform_retain-one_retain-range context pa pb na (cons '(retain) nb)))
 
 ;; delete
 
 (defmethod xform-in-seq [:delete :insert] [context pa pb na nb]
   (xform_any_insert context pa pb na nb))
 
-(defmethod xform-in-seq [:delete :retain] [context pa pb na nb]
-  (xform_delete-range_retain-range context pa pb na nb))
+(defmethod xform-in-seq [:delete :retain-range] [context pa pb na nb]
+  (xform_delete_retain-range context pa pb na nb))
+
+(defmethod xform-in-seq [:delete :retain-subtree] [context pa pb na nb]
+  (xform_delete_retain-subtree context pa pb na nb))
 
 (defmethod xform-in-seq [:delete :delete] [context pa pb na nb]
-  (xform_delete-range_delete-range context pa pb na nb))
+  (xform_delete_delete context pa pb na nb))
 
 (defmethod xform-in-seq [:delete :replace] [context pa pb na nb]
-  (xform_delete-range_replace-value context pa pb na nb))
-
-(defmethod xform-in-seq [:delete :retain-seq] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
-
-(defmethod xform-in-seq [:delete :retain-map] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
-
-(defmethod xform-in-seq [:delete :retain-range] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
+  (xform_delete_replace context pa pb na nb))
 
 (defmethod xform-in-seq [:delete nil] [context pa pb na nb]
-  (xform_delete-range_retain-range
-   context pa pb na
-   (cons (op/retain-range (:delete-length (first na)))
-         nb)))
+  (xform_delete_retain-range context pa pb na
+                             (cons (list 'retain (op/length (first na)))
+                                   nb)))
 
 ;; replace
 
 (defmethod xform-in-seq [:replace :insert] [context pa pb na nb]
   (xform_any_insert context pa pb na nb))
 
-(defmethod xform-in-seq [:replace :retain] [context pa pb na nb]
+(defmethod xform-in-seq [:replace :retain-range] [context pa pb na nb]
   (xform_retain-one_retain-range context pa pb na nb))
 
+(defmethod xform-in-seq [:replace :retain-subtree] [context pa pb na nb]
+  (xform_replace_retain-subtree context pa pb na nb))
+
 (defmethod xform-in-seq [:replace :delete] [context pa pb na nb]
-  (xform_replace-value_delete-range context pa pb na nb))
+  (xform_replace_delete context pa pb na nb))
 
 (defmethod xform-in-seq [:replace :replace] [context pa pb na nb]
-  (xform_replace-value_replace-value context pa pb na nb))
-
-(defmethod xform-in-seq [:replace :retain-seq] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
-
-(defmethod xform-in-seq [:replace :retain-map] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
-
-(defmethod xform-in-seq [:replace :retain-range] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
+  (xform_replace_replace context pa pb na nb))
 
 (defmethod xform-in-seq [:replace nil] [context pa pb na nb]
-  (xform_retain-one_retain-range context pa pb na (cons op/retain nb)))
+  (xform_retain-one_retain-range context pa pb na (cons '(retain) nb)))
 
 ;; end-of-sequence
 
@@ -371,116 +392,136 @@
 (defmethod xform-in-seq [nil :retain-range] [context pa pb na nb]
   (xform_retain-range_retain-range context pa pb (cons (first nb) na) nb))
 
+(defmethod xform-in-seq [nil :retain-subtree] [context pa pb na nb]
+  (xform_retain-range_retain-one context pa pb (cons '(retain) na) nb))
+
 (defmethod xform-in-seq [nil :delete] [context pa pb na nb]
-  (xform_retain-range_delete-range
-   context pa pb
-   (cons (op/retain-range (:delete-length (first nb)))
-         na)
-   nb))
+  (xform_retain-range_delete context pa pb
+                             (cons (list 'retain (op/length (first nb)))
+                                   na)
+                             nb))
 
 (defmethod xform-in-seq [nil :replace] [context pa pb na nb]
-  (xform_retain-range_retain-one context pa pb (cons op/retain na) nb))
-
-(defmethod xform-in-seq [nil :retain-seq] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
-
-(defmethod xform-in-seq [nil :retain-map] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
-
-(defmethod xform-in-seq [nil :retain-range] [context pa pb na nb]
-  (xform_insert_any context pa pb na nb))
+  (xform_retain-range_retain-one context pa pb (cons '(retain) na) nb))
 
 ;; -------- xform-roots
 
 (defn reverse-xform-roots [xform-fn]
   (fn [context a b]
     (let [[b a] (xform-fn context b a)]
+
       [a b])))
 
+;; preserve inserted roots of same collection type
 (defn xform-roots_insert_insert [context a b]
-  (if (pos? (:lww-tie-breaker context))
-    [op/retain b]
-    [a op/retain]))
+  (let [a (first (op/values a))
+        b (first (op/values b))]
+    (cond
+      (and (sequential? a)
+           (sequential? b))
+      (xform-seqs context (op/values a) (op/values b))
+      
+      (and (map? a)
+           (map? b))
+      (xform-maps context (op/values a) (op/values b))
+
+      ;; XX instead one should win and the other should be undone
+      :else (panic "unable to xform mismatched subtree types"))))
 
 (defn xform-roots_replace_replace [context a b]
   (if (pos? (:lww-tie-breaker context))
-    [op/retain
-     (cond-> b
-       (:have-replaced-value? b)
-       (assoc :replaced-value (:value a)))]
-    [(cond-> a
-       (:have-replaced-value? a)
-       (assoc :replaced-value (:value b)))
-     op/retain]))
+    ;; b wins
+    ['(retain)
+     (list (first b)
+           (second (op/values a))
+           (second (op/values b)))]
+    ;; a wins
+    [(list (first a)
+           (second (op/values b))
+           (second (op/values a)))
+     '(retain)]))
 
-(defn xform-roots_retain_replace [context a b]
-  [op/retain
-   (cond-> b
-     (:have-replaced-value? b)
-     (update :replaced-value materialize a))])
+(defn xform-roots_retain-subtree_replace [context a b]
+  ['(retain)
+   (list (first b)
+         (materialize (first (op/values b)) a))])
 
-(def xform-roots_replace_retain
-  (reverse-xform-roots xform-roots_retain_replace))
+(def xform-roots_replace_retain-subtree
+  (reverse-xform-roots xform-roots_retain-subtree_replace))
 
-(defn xform-roots_delete-range_retain [context a b]
-  [(cond-> a
-     (:have-deleted-values? a)
-     (update :deleted-values #(-> %
-                                  first
-                                  (materialize b)
-                                  vector)))
-   op/retain])
+(defn xform-roots_delete_retain-subtree [context a b]
+  [(list (first a)
+         (materialize (first (op/values a)) b))
+   '(retain)])
 
 
-(def xform-roots_retain_delete-range
-  (reverse-xform-roots xform-roots_delete-range_retain))
+(def xform-roots_retain-subtree_delete
+  (reverse-xform-roots xform-roots_delete_retain-subtree))
+
+(defn xform-roots_delete_replace [context a b]
+  [(list (first a)
+         (second (op/values b)))
+   '(retain)])
+
+(def xform-roots_replace_delete
+  (reverse-xform-roots xform-roots_delete_replace))
 
 ;; insert
 
-;;XX this may introduce operations for which :have-replaced-value? is
-;;true even though the tree was supposed to be clear of this undo data
 (defmethod xform-roots [:insert :insert] [context a b]
-  (xform-roots_insert_insert context
-                              (op/replace (first (:values a))
-                                                (first (:values b)))
-                              (op/replace (first (:values b))
-                                                (first (:values a)))))
+  (xform-roots_insert_insert context a b))
 
-;; This is valid becase we allow retain-range as a no-op on non-existing
-;; map entries and nil root nodes.
+;; This is valid because retain-range can act as a no-op
 (defmethod xform-roots [:insert :retain-range] [context a b]
-  [a op/retain])
+  [a b])
 
 ;; invalid (insert over existing | retain non-existing)
-(defmethod xform-roots [:insert :retain] [context a b]
+(defmethod xform-roots [:insert :retain-subtree] [context a b]
   (panic "insert over existing or retain non-existing"))
 
 ;; invalid (insert over existing | delete non-existing)
-(defmethod xform-roots [:insert :delete-range] [context a b]
+(defmethod xform-roots [:insert :delete] [context a b]
   (panic "insert over existing or delete non-existing"))
 
 ;; invalid (insert over existing | replace non-existing)
 (defmethod xform-roots [:insert :replace] [context a b]
   (panic "insert over existing or replace non-existing"))
 
-;; retain
+;; retain-range
 
-;; This is valid becase we allow retain-range as a no-op on non-existing
-;; map entries and nil root nodes.
-(defmethod xform-roots [:retain :insert] [context a b]
-  [op/retain b])
+;; This is valid because retain-range can act as a no-op
+(defmethod xform-roots [:retain-range :insert] [context a b]
+  [a b])
 
-(defmethod xform-roots [:retain :retain] [context a b]
-  [op/retain b])
+(defmethod xform-roots [:retain-range :retain-range] [context a b]
+  [a b])
 
-(defmethod xform-roots [:retain :retain] [context a b]
-  [op/retain b])
+(defmethod xform-roots [:retain-range :retain-subtree] [context a b]
+  [a b])
 
-(defmethod xform-roots [:retain :delete-range] [context a b]
-  [op/retain b])
+(defmethod xform-roots [:retain-range :delete] [context a b]
+  [a b])
 
-(defmethod xform-roots [:retain :replace] [context a b]
-  [op/retain b])
+(defmethod xform-roots [:retain-range :replace] [context a b]
+  [a b])
+
+;; retain-subtree
+
+;; invalid (insert over existing | retain non-existing)
+(defmethod xform-roots [:retain-subtree :insert] [context a b]
+  (panic "insert over existing or retain non-existing"))
+
+(defmethod xform-roots [:retain-subtree :retain-range] [context a b]
+  [a b])
+
+(defmethod xform-roots [:retain-subtree :retain-subtree] [context a b]
+  (xform-subtrees context a b))
+
+(defmethod xform-roots [:retain-subtree :delete] [context a b]
+  (xform-roots_retain-subtree_delete context a b))
+
+(defmethod xform-roots [:retain-subtree :replace] [context a b]
+  (xform-roots_retain-subtree_replace context a b))
 
 ;; delete
 
@@ -488,23 +529,17 @@
 (defmethod xform-roots [:delete :insert] [context a b]
   (panic "insert over existing or delete non-existing"))
 
-(defmethod xform-roots [:delete :retain] [context a b]
-  [a op/retain])
+(defmethod xform-roots [:delete :retain-range] [context a b]
+  [a b])
 
-(defmethod xform-roots [:delete :retain] [context a b]
-  (xform-roots_delete_retain context a b))
+(defmethod xform-roots [:delete :retain-subtree] [context a b]
+  (xform-roots_delete_retain-subtree context a b))
 
 (defmethod xform-roots [:delete :delete] [context a b]
-  (assert (or (not (and (:have-deleted-values? a)
-                        (:have-deleted-values? b)))
-               (= (:deleted-values a)
-                  (:deleted-values b))))
-  [op/retain op/retain])
+  ['(retain) '(retain)])
 
-;;XX maybe a deleted value should not be replaced to make it equal to
-;;the in-seq handling?
 (defmethod xform-roots [:delete :replace] [context a b]
-  [op/retain (op/insert [(:value b)])])
+  (xform-roots_delete_replace context a b))
 
 ;; replace
 
@@ -512,144 +547,14 @@
 (defmethod xform-roots [:replace :insert] [context a b]
   (panic "insert over existing or replace non-existing"))
 
-(defmethod xform-roots [:replace :retain] [context a b]
-  [a op/retain])
+(defmethod xform-roots [:replace :retain-range] [context a b]
+  [a '(retain)])
 
-(defmethod xform-roots [:replace :retain] [context a b]
-  (xform-roots_replace_retain context a b))
+(defmethod xform-roots [:replace :retain-subtree] [context a b]
+  (xform-roots_replace_retain-subtree context a b))
 
-;;XX maybe a deleted value should not be replaced to make it equal to
-;;the in-seq handling?
 (defmethod xform-roots [:replace :delete] [context a b]
-  [(op/insert [(:value a)]) op/retain])
+  (xform-roots_replace_delete context a b))
 
 (defmethod xform-roots [:replace :replace] [context a b]
   (xform-roots_replace_replace context a b))
-
-
-;; insert
-
-(defmethod xform-trees [:insert :insert] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:insert :retain] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:insert :delete] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:insert :replace] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:insert :retain-seq] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:insert :retain-map] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:insert :retain-range] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:insert nil] [context pa pb na nb]
-  )
-
-;; retain
-
-(defmethod xform-trees [:retain :insert] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:retain :retain] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:retain :delete] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:retain :replace] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:retain :retain-seq] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:retain :retain-map] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:retain :retain-range] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:retain nil] [context pa pb na nb]
-  )
-
-;; delete
-
-(defmethod xform-trees [:delete :insert] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:delete :retain] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:delete :delete] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:delete :replace] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:delete :retain-seq] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:delete :retain-map] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:delete :retain-range] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:delete nil] [context pa pb na nb]
-  )
-
-;; replace
-
-(defmethod xform-trees [:replace :insert] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:replace :retain] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:replace :delete] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:replace :replace] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:replace :retain-seq] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:replace :retain-map] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:replace :retain-range] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [:replace nil] [context pa pb na nb]
-  )
-
-;; end-of-sequence
-
-(defmethod xform-trees [nil :insert] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [nil :retain] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [nil :delete] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [nil :replace] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [nil :retain-seq] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [nil :retain-map] [context pa pb na nb]
-  )
-
-(defmethod xform-trees [nil :retain-range] [context pa pb na nb]
-  )

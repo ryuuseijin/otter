@@ -395,7 +395,7 @@
 (defmethod compose-in-seq [nil :replace] [na nb]
   [[(first nb)] na (next nb)])
 
-;; :insert
+;; insert
 
 (defmethod compose-roots [:insert :insert] [a b]
   (panic "insert must not be used to replace existing values, use replace instead"))
