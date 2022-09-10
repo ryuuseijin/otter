@@ -5,34 +5,34 @@
 
 (defmulti xform-in-seq
   (fn [context pa pb na nb]
-    [(op-type-in-seq (first na))
-     (op-type-in-seq (first nb))]))
+    [(op/op-type (first na))
+     (op/op-type (first nb))]))
 
 (defmulti xform-roots
   (fn [context a b]
-    [(op-type-as-root a)
-     (op-type-as-root b)]))
+    [(op/op-type a)
+     (op/op-type b)]))
 
-(defn make-tie-breaker [revision-a revision-b]
-  (let [id-breaker (compare (-> revision-a :id :pid)
-                            (-> revision-b :id :pid))]
+(defn make-tie-breaker [a-info b-info]
+  (let [id-breaker (compare (:pid a-info)
+                            (:pid b-info))]
     (if-not (zero? id-breaker)
       id-breaker
-      (let [time-breaker (compare (:time revision-a)
-                                  (:time revision-b))]
+      (let [time-breaker (compare (:time a-info)
+                                  (:time b-info))]
         (if-not (zero? time-breaker)
           time-breaker
           (panic "unable to tie-break operations with identical pid and time"))))))
 
-(defn make-lww-tie-breaker [revision-a revision-b]
-  (let [time-breaker (compare (:time revision-a)
-                              (:time revision-b))]
+(defn make-lww-tie-breaker [a-info b-info]
+  (let [time-breaker (compare (:time a-info)
+                              (:time b-info))]
     (if-not (zero? time-breaker)
       time-breaker
-      (make-tie-breaker revision-a revision-b))))
+      (make-tie-breaker a-info b-info))))
 
 (defn insert-or-replace-to-retain [insert-or-replace]
-  (list 'retain (op/length insert)))
+  (list 'retain (op/length insert-or-replace)))
 
 (defn reverse-xform [xform-fn]
   (fn [context pa pb na nb]
@@ -52,7 +52,6 @@
 (defn xform-maps [context map-a map-b]
   (->> (select-keys map-a (keys map-b))
        (reduce (fn [[map-a map-b] [k op-a]]
-                 ;;XX no-op retains could be filtered-out immediately
                  (let [[op-a' op-b'] (xform-roots context op-a (get map-b k))]
                    [(assoc map-a k op-a')
                     (assoc map-b k op-b')]))
@@ -70,23 +69,13 @@
 
     :else (panic "unable to xform mismatched subtree types")))
 
-(defn xform-deltas [context delta-a delta-b]
-  (let [[op-a op-b] (xform-roots context (:root-op delta-a) (:root-op delta-b))]
-    [(assoc delta-a :root-op op-a)
-     (assoc delta-b :root-op op-b)]))
-
-(defn xform-context [& {:keys [tie-breaker lww-tie-breaker] :as context}]
-  context)
-
-(defn xform-revisions [revision-a revision-b]
-  (let [[delta-a delta-b]
-        (xform-deltas (xform-context
-                       :tie-breaker (make-tie-breaker revision-a revision-b)
-                       :lww-tie-breaker (make-lww-tie-breaker revision-a revision-b))
-                      (:delta revision-a)
-                      (:delta revision-b))]
-    [(assoc revision-a :delta delta-a)
-     (assoc revision-b :delta delta-b)]))
+(defn xform [context delta-a delta-b]
+  (let [[op-a op-b] (xform-roots {:tie-breaker (make-tie-breaker delta-a delta-b)
+                                  :lww-tie-breaker (make-lww-tie-breaker delta-a delta-b)}
+                                 (:root delta-a)
+                                 (:root delta-b))]
+    [(assoc delta-a :root op-a)
+     (assoc delta-b :root op-b)]))
 
 ;; -------- xform-in-seq
 
@@ -109,7 +98,7 @@
 (defn xform_retain-range_retain-range [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    (case (op/compare-length a b)
+    (case (op/compare-numeric-length a b)
       :equal
       [(conj pa a)
        (conj pb b)
@@ -135,7 +124,7 @@
 (defn xform_delete_delete [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    (case (op/compare-length a b)
+    (case (op/compare-values-length a b)
       :equal
       [pa
        pb
@@ -160,7 +149,7 @@
 (defn xform_retain-range_delete [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    (case (op/compare-length a b)
+    (case (op/compare-left-numeric-length a b)
       :equal
       [pa
        (conj pb b)
@@ -188,7 +177,7 @@
 (defn xform_retain-range_retain-one [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    (case (op/compare-length a 1)
+    (case (op/compare-numeric-length a 1)
       :smaller
       [pa pb (next na) nb]
 
@@ -213,7 +202,7 @@
 (defn xform_delete_retain-one [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    (case (op/compare-length a 1)
+    (case (op/compare-right-numeric-length a 1)
       :smaller
       [pa pb (next na) nb]
 
@@ -272,7 +261,7 @@
 (defn xform_retain-subtree_replace [context pa pb na nb]
   (let [a (first na)
         b (first nb)]
-    [(conj pa '(retain))
+    [(conj pa '(retain 1))
      (conj pb (list (first b)
                     (materialize (first (op/values b)) a)
                     (second (op/values b))))
@@ -286,6 +275,9 @@
 
 (defmethod xform-in-seq [:insert :insert] [context pa pb na nb]
   (xform_insert_insert context pa pb na nb))
+
+(defmethod xform-in-seq [:insert :retain] [context pa pb na nb]
+  (xform-in-seq context pa pb na (op/unwrap-retain-in-seq nb)))
 
 (defmethod xform-in-seq [:insert :retain-range] [context pa pb na nb]
   (xform_insert_any context pa pb na nb))
@@ -302,10 +294,37 @@
 (defmethod xform-in-seq [:insert nil] [context pa pb na nb]
   (xform_insert_any context pa pb na nb))
 
+;; retain
+
+
+(defmethod xform-in-seq [:retain :insert] [context pa pb na nb]
+  (xform-in-seq context pa pb (op/unwrap-retain-in-seq na) nb))
+
+(defmethod xform-in-seq [:retain :retain] [context pa pb na nb]
+  (xform-in-seq context pa pb (op/unwrap-retain-in-seq na) (op/unwrap-retain-in-seq nb)))
+
+(defmethod xform-in-seq [:retain :retain-range] [context pa pb na nb]
+  (xform-in-seq context pa pb (op/unwrap-retain-in-seq na) nb))
+
+(defmethod xform-in-seq [:retain :retain-subtree] [context pa pb na nb]
+  (xform-in-seq context pa pb (op/unwrap-retain-in-seq na) nb))
+
+(defmethod xform-in-seq [:retain :delete] [context pa pb na nb]
+  (xform-in-seq context pa pb (op/unwrap-retain-in-seq na) nb))
+
+(defmethod xform-in-seq [:retain :replace] [context pa pb na nb]
+  (xform-in-seq context pa pb (op/unwrap-retain-in-seq na) nb))
+
+(defmethod xform-in-seq [:retain nil] [context pa pb na nb]
+  (xform-in-seq context pa pb (op/unwrap-retain-in-seq na) nb))
+
 ;; retain-range
 
 (defmethod xform-in-seq [:retain-range :insert] [context pa pb na nb]
   (xform_any_insert context pa pb na nb))
+
+(defmethod xform-in-seq [:retain-range :retain] [context pa pb na nb]
+  (xform-in-seq context pa pb na (op/unwrap-retain-in-seq nb)))
 
 (defmethod xform-in-seq [:retain-range :retain-range] [context pa pb na nb]
   (xform_retain-range_retain-range context pa pb na nb))
@@ -327,6 +346,9 @@
 (defmethod xform-in-seq [:retain-subtree :insert] [context pa pb na nb]
   (xform_any_insert context pa pb na nb))
 
+(defmethod xform-in-seq [:retain-subtree :retain] [context pa pb na nb]
+  (xform-in-seq context pa pb na (op/unwrap-retain-in-seq nb)))
+
 (defmethod xform-in-seq [:retain-subtree :retain-range] [context pa pb na nb]
   (xform_retain-one_retain-range context pa pb na nb))
 
@@ -340,12 +362,15 @@
   (xform_retain-subtree_replace context pa pb na nb))
 
 (defmethod xform-in-seq [:retain-subtree nil] [context pa pb na nb]
-  (xform_retain-one_retain-range context pa pb na (cons '(retain) nb)))
+  (xform_retain-one_retain-range context pa pb na (cons '(retain 1) nb)))
 
 ;; delete
 
 (defmethod xform-in-seq [:delete :insert] [context pa pb na nb]
   (xform_any_insert context pa pb na nb))
+
+(defmethod xform-in-seq [:delete :retain] [context pa pb na nb]
+  (xform-in-seq context pa pb na (op/unwrap-retain-in-seq nb)))
 
 (defmethod xform-in-seq [:delete :retain-range] [context pa pb na nb]
   (xform_delete_retain-range context pa pb na nb))
@@ -369,6 +394,9 @@
 (defmethod xform-in-seq [:replace :insert] [context pa pb na nb]
   (xform_any_insert context pa pb na nb))
 
+(defmethod xform-in-seq [:replace :retain] [context pa pb na nb]
+  (xform-in-seq context pa pb na (op/unwrap-retain-in-seq nb)))
+
 (defmethod xform-in-seq [:replace :retain-range] [context pa pb na nb]
   (xform_retain-one_retain-range context pa pb na nb))
 
@@ -382,18 +410,21 @@
   (xform_replace_replace context pa pb na nb))
 
 (defmethod xform-in-seq [:replace nil] [context pa pb na nb]
-  (xform_retain-one_retain-range context pa pb na (cons '(retain) nb)))
+  (xform_retain-one_retain-range context pa pb na (cons '(retain 1) nb)))
 
 ;; end-of-sequence
 
 (defmethod xform-in-seq [nil :insert] [context pa pb na nb]
   (xform_any_insert context pa pb na nb))
 
+(defmethod xform-in-seq [nil :retain] [context pa pb na nb]
+  (xform-in-seq context pa pb na (op/unwrap-retain-in-seq nb)))
+
 (defmethod xform-in-seq [nil :retain-range] [context pa pb na nb]
   (xform_retain-range_retain-range context pa pb (cons (first nb) na) nb))
 
 (defmethod xform-in-seq [nil :retain-subtree] [context pa pb na nb]
-  (xform_retain-range_retain-one context pa pb (cons '(retain) na) nb))
+  (xform_retain-range_retain-one context pa pb (cons '(retain 1) na) nb))
 
 (defmethod xform-in-seq [nil :delete] [context pa pb na nb]
   (xform_retain-range_delete context pa pb
@@ -402,14 +433,13 @@
                              nb))
 
 (defmethod xform-in-seq [nil :replace] [context pa pb na nb]
-  (xform_retain-range_retain-one context pa pb (cons '(retain) na) nb))
+  (xform_retain-range_retain-one context pa pb (cons '(retain 1) na) nb))
 
 ;; -------- xform-roots
 
 (defn reverse-xform-roots [xform-fn]
   (fn [context a b]
     (let [[b a] (xform-fn context b a)]
-
       [a b])))
 
 ;; preserve inserted roots of same collection type
@@ -425,7 +455,7 @@
            (map? b))
       (xform-maps context (op/values a) (op/values b))
 
-      ;; XX instead one should win and the other should be undone
+      ;; XX instead one should win and the other should be reversed
       :else (panic "unable to xform mismatched subtree types"))))
 
 (defn xform-roots_replace_replace [context a b]
@@ -471,7 +501,10 @@
 (defmethod xform-roots [:insert :insert] [context a b]
   (xform-roots_insert_insert context a b))
 
-;; This is valid because retain-range can act as a no-op
+(defmethod xform-roots [:insert :retain] [context a b]
+  [a (op/unwrap-retain b)])
+
+;; This is valid because a retain acts as a no-op
 (defmethod xform-roots [:insert :retain-range] [context a b]
   [a b])
 
@@ -487,11 +520,35 @@
 (defmethod xform-roots [:insert :replace] [context a b]
   (panic "insert over existing or replace non-existing"))
 
+;; retain
+
+(defmethod xform-roots [:retain :insert] [context a b]
+  [(op/unwrap-retain a) b])
+
+(defmethod xform-roots [:retain :retain] [context a b]
+  [(op/unwrap-retain a)
+   (op/unwrap-retain b)])
+
+(defmethod xform-roots [:retain :retain-range] [context a b]
+  [(op/unwrap-retain a) b])
+
+(defmethod xform-roots [:retain :retain-subtree] [context a b]
+  [(op/unwrap-retain a) b])
+
+(defmethod xform-roots [:retain :delete] [context a b]
+  [(op/unwrap-retain a) b])
+
+(defmethod xform-roots [:retain :replace] [context a b]
+  [(op/unwrap-retain a) b])
+
 ;; retain-range
 
-;; This is valid because retain-range can act as a no-op
+;; This is valid because a retain acts as a no-op
 (defmethod xform-roots [:retain-range :insert] [context a b]
   [a b])
+
+(defmethod xform-roots [:retain-range :retain] [context a b]
+  [a (op/unwrap-retain b)])
 
 (defmethod xform-roots [:retain-range :retain-range] [context a b]
   [a b])
@@ -511,6 +568,9 @@
 (defmethod xform-roots [:retain-subtree :insert] [context a b]
   (panic "insert over existing or retain non-existing"))
 
+(defmethod xform-roots [:retain-subtree :retain] [context a b]
+  [a (op/unwrap-retain b)])
+
 (defmethod xform-roots [:retain-subtree :retain-range] [context a b]
   [a b])
 
@@ -529,6 +589,9 @@
 (defmethod xform-roots [:delete :insert] [context a b]
   (panic "insert over existing or delete non-existing"))
 
+(defmethod xform-roots [:delete :retain] [context a b]
+  [a (op/unwrap-retain b)])
+
 (defmethod xform-roots [:delete :retain-range] [context a b]
   [a b])
 
@@ -546,6 +609,9 @@
 ;; invalid (insert over existing | replace non-existing)
 (defmethod xform-roots [:replace :insert] [context a b]
   (panic "insert over existing or replace non-existing"))
+
+(defmethod xform-roots [:replace :retain] [context a b]
+  [a (op/unwrap-retain b)])
 
 (defmethod xform-roots [:replace :retain-range] [context a b]
   [a '(retain)])
