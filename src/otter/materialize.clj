@@ -16,8 +16,6 @@
 
 (defn materialize-map [m op-map]
   (reduce (fn [m [k op]]
-            (when-not (= 1 (op/length op))
-              (panic "operations on map values must have a length of exactly 1"))
             (materialize-in-map m k op))
           m op-map))
 
@@ -50,6 +48,12 @@
   [(into prevs (op/values op))
    nexts])
 
+(defmethod materialize-in-seq :retain [prevs nexts op]
+  (reduce (fn [[prevs nexts] op]
+            (materialize-in-seq prevs nexts op))
+          [prevs nexts]
+          (op/values op)))
+
 (defmethod materialize-in-seq :retain-range [prevs nexts op]
   [(into prevs (take op nexts))
    (drop op nexts)])
@@ -72,6 +76,12 @@
   (when (contains? m k)
     (panic "insert-values can only be used to insert new map entries or nil root nodes"))
   (assoc m k (first (op/values op))))
+
+(defmethod materialize-in-map :retain [m k op]
+  (case (count (op/values op))
+    0 m
+    1 (materialize-in-map m k (first (op/values op)))
+    (panic "retain on map values should have a length of 0 or 1")))
 
 (defmethod materialize-in-map :retain-range [m k op]
   (when (not= 1 op)

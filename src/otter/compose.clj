@@ -26,7 +26,7 @@
 (defn compose-maps [map-a map-b]
   (into map-a
         (map (fn [[k op-b]]
-               [k (if-let [op-a (get map-a k)]
+               [k (if-some [op-a (get map-a k)]
                     (compose-roots op-a op-b)
                     op-b)]))
         map-b))

@@ -28,14 +28,6 @@
   (and (sequential? op)
        (= 'retain (first op))))
 
-;; XX could replace most of the retain xforms (and compositions?) by inserting this in xform-seq/compose-seq
-(defn unwrap-explicit-retains-in-seq [ops]
-  (lazy-seq
-   (when-some [op (first ops)]
-     (if (explicit-retain? op)
-       (unwrap-explicit-retains-in-seq (concat (values op) ops))
-       (cons op (unwrap-explicit-retains-in-seq (next ops)))))))
-
 (defn unwrap-retain [op]
   (assert (= 1 (count (values op)))
           "encountered multiple values in a root (retain ...) op")
