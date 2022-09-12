@@ -2,10 +2,35 @@
   (:require [otter.operations :as op]
             [otter.utils :refer :all]))
 
-(declare normalize-seq
-         normalize)
+;; Normalization rules:
+;;
+;; For root nodes the numerical range is unncessary and removed.
+;;   (retain 1) => (retain)
+;;
+;; In maps, values act like a root node,
+;;   {:key (retain 1 }) => {:key (retain)}
+;; retains around subtrees are unwrapped,
+;;   {:key (retain []}) => {:key []      }
+;;   {:key (retain {}}) => {:key {}      }
+;; entries that do nothing are removed.
+;;   {:key (retain)} => {}
+;;
+;; In sequences, retains are unwrapped,
+;;   [(retain ...)] => [...]
+;; empty subtrees become retains,
+;;   [[] {} ...] => [(retain 1) (retain 1) ...]
+;; sequence ops are joined
+;;   [(retain 1) (retain 1)]  => [(retain 2) ...]
+;; operations that do nothing are removed.
+;;   [0 (insert) (delete) (retain) ...] => [...]
+;; retains are unwrapped
+;;   [(retain 2) ...] => [2 ...]
+;; the last retain-range in a sequence is redundant
+;;   [... 2] => [...]
 
-(defn nop? [op]
+(declare normalize-rec)
+
+(defn remove-in-seq? [op]
   (case (op/op-type op)
     (:insert
      :retain
@@ -13,78 +38,117 @@
     (not (boolean (seq (op/values op))))
 
     :retain-range   (zero? op)
-    :retain-subtree (empty? op)
+    :retain-subtree  false
     :replace         false
 
     ;;else
     false))
 
-(def join-ops-xf
-  (let [finalize-op
-        (fn [op]
-          (case (op/op-type op)
-            ;; turn the vector op into a sequence for consistency
-            (:insert :retain :delete)
-            (seq op)
+(defn remove-in-map? [op]
+  (or (remove-in-seq? op)
+      (and (= (op/op-type op) :retain-subtree)
+           (empty? op))))
 
-            ;;else: nothing to do
-            op))]
+(def listlike-op-types #{:insert :retain :delete})
+(def joinable-op-types #{:insert :retain :delete :retain-range})
+
+(defn join-ops? [a b] 
+  (and (= (op/op-type a) (op/op-type b))
+       (joinable-op-types (op/op-type b))) )
+
+(def join-ops-xf
+  (let [;; [insert ...] => (insert ...) undo effect of (vec a)
+        flush-op #(cond-> % (listlike-op-types (op/op-type %)) (seq))]
     (stateful-mapcat-xf
      (fn
-       ([a] [(finalize-op a)])
+       ([a]
+        (when a
+          [(flush-op a)]))
        ([a b]
-        (if (and a
-                 (= (op/op-type a)
-                    (op/op-type b))
-                 (contains? #{:insert :retain :delete :retain-range}
-                            (op/op-type b)))
+        (cond
+          (and a (join-ops? a b))
           (case (op/op-type b)
-            ;; join sequences
+            ;; (insert A) (insert B) => (insert A B)
             (:insert :retain :delete)
             [(into (vec a) (op/values b))]
 
-            ;; join numeric ranges
+            ;; (retain 1) (retain 2) => (retain 3)
             :retain-range
             [(+ a b)])
-          (if a
-            ;; cannot join, flush a and make b the new state
-            [b (finalize-op a)]
-            ;; no state yet, use b as the new state
-            [b])))))))
+
+          ;; cannot join; flush a and make b the new state
+          a      [b (flush-op a)]
+          ;; no state yet; use b as the new state
+          :else  [b]))))))
+
+(def normalize-in-seq-xf
+  (mapcat
+   (fn [op]
+     (case (op/op-type op)
+       ;; [(retain ...)] => [...]
+       :retain          (op/values op)
+       ;; [{}] => [1]
+       :retain-subtree  (if (empty? op)
+                          [1]
+                          [op])
+       ;;else
+       [op]))))
 
 (defn normalize-seq [ops]
   (into []
-        (comp (map normalize)
-              (filter (complement nop?))
+        (comp (map normalize-rec)
+              normalize-in-seq-xf
+              (filter (complement remove-in-seq?))
               join-ops-xf)
         ops))
 
 (defn normalize-in-map [op]
-  (let [n-op (normalize op)]
-    (if (and (= :retain (op/op-type n-op))
-             (or (sequential? (first (op/values n-op)))
-                 (map?        (first (op/values n-op)))))
-      (first (op/values n-op))
-      n-op)))
+  (cond
+    ;; {:key (retain [])} => {:key []}
+    (and (= (op/op-type op) :retain)
+         (or (sequential? (first (op/values op)))
+             (map?        (first (op/values op)))))
+    (first (op/values op))
+
+    ;; (retain 1) => (retain)
+    (and (= (op/op-type op) :retain)
+         (number? (first (op/values op))))
+    '(retain)
+
+    :else op))
 
 (defn normalize-map [op-map]
   (into (empty op-map)
-        (comp (map-vals normalize-in-map)
-              (filter-vals (complement nop?)))
+        (comp (map-vals (comp normalize-rec
+                              normalize-in-map))
+              (filter-vals (complement remove-in-map?)))
         op-map))
 
-(defn normalize [op]
+(defn normalize-rec [op]
   (case (op/op-type op)
     :retain
-    (let [[child-op :as child-ops] (normalize-seq (op/values op))]
-      (if (number? child-op)
-        '(retain)
-        (list* 'retain child-ops)))
+    (list* (first op) (normalize-seq (op/values op)))
 
     :retain-subtree
     (cond
-      (sequential? op) (normalize-seq op)
-      (map?        op) (normalize-map op))
+      (sequential? op)
+      (let [n-ops (normalize-seq op)]
+        ;;   [... 2] => [...]
+        (cond-> n-ops
+          (and (seq n-ops)
+               (number? (peek n-ops)))
+          pop))
 
+      (map? op)
+      (normalize-map op))
+    
     ;;else
     op))
+
+(defn normalize [op]
+  (let [n-op (normalize-rec op)]
+    ;; (retain 1) => (retain)
+    (if (and (= (op/op-type n-op) :retain)
+             (number? (first (op/values n-op))))
+      '(retain)
+      n-op)))
