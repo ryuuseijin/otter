@@ -1,12 +1,13 @@
 (ns otter.compose-test
   (:require [otter.compose :refer [compose]]
+            [otter.materialize :refer [materialize]]
             [clojure.test :refer :all]))
 
 (deftest compose-in-seq-insert_insert
   (testing "composing two inserts in a sequence"
-    (is (= '(retain (insert :one :two))
-           (compose '(retain (insert :two))
-                    '(retain (insert :one)))))))
+    (is (= '(insert :one :two)
+           (compose '[(insert :two)]
+                    '[(insert :one)])))))
 
 (deftest compose-in-seq_insert_retain
   (testing "composing insert and retain in a sequence"

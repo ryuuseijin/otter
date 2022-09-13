@@ -2,15 +2,16 @@
   (:require [otter.operations :as op]
             [otter.utils :refer :all]
             [otter.materialize :refer [materialize]]
+            [otter.normalize :refer [normalize]]
             [otter.invert :refer [invert]]))
 
 (defmulti compose-in-seq
-  (fn [tie-breaker pa pb na nb]
+  (fn [pa pb na nb]
     [(op/op-type (first na))
      (op/op-type (first nb))]))
 
 (defmulti compose-roots
-  (fn [tie-breaker a b]
+  (fn [a b]
     [(op/op-type a)
      (op/op-type b)]))
 
@@ -45,8 +46,13 @@
 
 (defn compose
   ([] '(retain))
-  ([delta-a delta-b]
-   (compose-roots delta-a delta-b)))
+  ([op-a op-b]
+   (normalize
+    (let [c-op (compose-roots op-a op-b)]
+      ;; re-wrap unwrapped retains in root position
+      (if (number? c-op)
+        '(retain)
+        c-op)))))
 
 (defn split-next [ops off]
   (let [[split-1 split-2] (op/split (first ops) off)]
@@ -173,7 +179,8 @@
   (compose-in-seq (op/unwrap-retain-in-seq na) nb))
 
 (defmethod compose-in-seq [:retain :retain] [na nb]
-  (compose-in-seq (op/unwrap-retain-in-seq na) (op/unwrap-retain-in-seq nb)))
+  (compose-in-seq (op/unwrap-retain-in-seq na)
+                  (op/unwrap-retain-in-seq nb)))
 
 (defmethod compose-in-seq [:retain :retain-range] [na nb]
   (compose-in-seq (op/unwrap-retain-in-seq na) nb))
@@ -464,7 +471,8 @@
   (compose-roots (op/unwrap-retain a) b))
 
 (defmethod compose-roots [:retain :retain] [a b]
-  (compose-roots (op/unwrap-retain a) (op/unwrap-retain b)))
+  (compose-roots (op/unwrap-retain a)
+                 (op/unwrap-retain b)))
 
 (defmethod compose-roots [:retain :retain-range] [a b]
   (compose-roots (op/unwrap-retain a) b))

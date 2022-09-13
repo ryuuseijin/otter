@@ -29,9 +29,10 @@
        (= 'retain (first op))))
 
 (defn unwrap-retain [op]
-  (assert (= 1 (count (values op)))
-          "encountered multiple values in a root (retain ...) op")
-  (first (values op)))
+  (case (count (values op))
+    0 1 ;; (retain) is equivalent to (retain 1) as a root
+    1 (first (values op))
+    (panic "encountered more than 1 value retained in root position")))
 
 (defmulti length op-type)
 

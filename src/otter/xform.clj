@@ -1,6 +1,7 @@
 (ns otter.xform
   (:require [otter.operations :as op]
             [otter.materialize :refer [materialize]]
+            [otter.normalize :refer [normalize]]
             [otter.utils :refer :all]))
 
 (defmulti xform-in-seq
@@ -74,8 +75,8 @@
                                   :lww-tie-breaker (make-lww-tie-breaker delta-a delta-b)}
                                  (:root delta-a)
                                  (:root delta-b))]
-    [(assoc delta-a :root op-a)
-     (assoc delta-b :root op-b)]))
+    [(assoc delta-a :root (normalize op-a))
+     (assoc delta-b :root (normalize op-b))]))
 
 ;; -------- xform-in-seq
 
